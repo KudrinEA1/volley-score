@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Счёт в эфире</title>
+<style>
+  /* Цвета из логотипа клуба: синий #3E4093 (форма), жёлтый #FDCD29 (клюв, мяч), золото #E4C04B (кольцо) */
+  :root { --blue:#3E4093; --navy:#2C2F53; --ink:#1F2150; --yellow:#FDCD29; --gold:#E4C04B; --k:1; }
+  html, body { margin:0; background:transparent; font-family: "Segoe UI", system-ui, -apple-system, sans-serif; color:#fff; }
+  body { display:flex; justify-content:center; padding-top: calc(10px * var(--k)); }
+  #wrap { display:flex; flex-direction:column; align-items:center; position:relative; }
+
+  /* ---------- основная строка ---------- */
+  #bar { display:flex; align-items:stretch; height: calc(36px * var(--k)); border-radius: calc(8px * var(--k)); overflow:hidden;
+         box-shadow: 0 0 0 calc(2px * var(--k)) var(--gold); font-weight:700; }
+  .name { background:var(--blue); display:flex; align-items:center; gap: calc(6px * var(--k)); padding: 0 calc(12px * var(--k));
+          font-size: calc(18px * var(--k)); white-space:nowrap; box-sizing:border-box; line-height:1; }
+  .name span { flex:1; text-align:center; }        /* блоки названий одной ширины, короткое название - по центру своего блока */
+  #nThem { flex-direction: row-reverse; }
+  .dot { width: calc(9px * var(--k)); height: calc(9px * var(--k)); border-radius:50%; background:var(--yellow); flex:none; opacity:0; transition: opacity .3s; }
+  .dot.on { opacity:1; }
+  .pts { position:relative; background:var(--yellow); color:var(--ink); min-width: calc(50px * var(--k)); padding: 0 calc(8px * var(--k));
+         font-size: calc(27px * var(--k)); line-height:1; display:flex; align-items:center; justify-content:center; font-variant-numeric: tabular-nums; }
+  .pts::after { content:""; position:absolute; inset:0; background:#fff; opacity:0; pointer-events:none; }
+  .pts.flash::after { animation: flash .9s ease-out; }
+  @keyframes flash { 0% { opacity:.75; } 100% { opacity:0; } }
+  .sets { background:var(--navy); display:flex; flex-direction:column; align-items:center; justify-content:center; padding: 0 calc(10px * var(--k)); line-height:1; }
+  .sets small { font-size: calc(9px * var(--k)); color:var(--gold); letter-spacing:.06em; text-transform:uppercase; font-weight:700; }
+  .sets span { font-size: calc(15px * var(--k)); font-variant-numeric: tabular-nums; }
+
+  /* ---------- значки под строкой: сетбол, серия ---------- */
+  #under { display:flex; justify-content:space-between; width:100%; height: calc(24px * var(--k)); margin-top: calc(4px * var(--k)); }
+  .side { display:flex; gap: calc(6px * var(--k)); }
+  .badge { font-size: calc(13px * var(--k)); font-weight:800; padding: calc(2px * var(--k)) calc(8px * var(--k)); border-radius: calc(6px * var(--k));
+           background:var(--navy); box-shadow: 0 0 0 calc(1.5px * var(--k)) var(--gold); white-space:nowrap;
+           opacity:0; transform: translateY(calc(-8px * var(--k))); transition: opacity .35s, transform .35s; }
+  .badge.on { opacity:1; transform:none; }
+  .badge.ball { background:var(--yellow); color:var(--ink); box-shadow:none; }
+
+  /* ---------- итог партии / статистика ---------- */
+  #panel { margin-top: calc(2px * var(--k)); background: rgba(31,33,80,.94); border-radius: calc(8px * var(--k)); box-shadow: 0 0 0 calc(2px * var(--k)) var(--gold);
+           padding: calc(8px * var(--k)) calc(12px * var(--k)); opacity:0; transform: translateY(calc(-12px * var(--k))); transition: opacity .4s, transform .4s; }
+  #panel.on { opacity:1; transform:none; }
+  .ttl { font-size: calc(15px * var(--k)); font-weight:800; margin-bottom: calc(6px * var(--k)); text-align:center; }
+  .ttl em { font-style:normal; color:var(--yellow); }
+  table { border-collapse:collapse; }
+  td { padding: calc(2px * var(--k)) calc(6px * var(--k)); font-size: calc(14px * var(--k)); font-weight:700; vertical-align:middle; white-space:nowrap; }
+  td.n { color:var(--gold); }
+  tr + tr td { border-top: 1px solid rgba(228,192,75,.35); padding-top: calc(7px * var(--k)); }
+  tr td { padding-bottom: calc(7px * var(--k)); }
+  .setrow { display:flex; align-items:center; gap: calc(8px * var(--k)); }
+  .strip { display:grid; grid-template-rows: repeat(2, calc(17px * var(--k))); grid-auto-columns: calc(17px * var(--k)); gap: calc(2px * var(--k)); }
+  .strip i { width: calc(17px * var(--k)); height: calc(17px * var(--k)); border-radius:50%; font-style:normal; color:var(--ink);
+             font-size: calc(9px * var(--k)); font-weight:800; display:flex; align-items:center; justify-content:center; font-variant-numeric: tabular-nums; }
+  .strip i.u { background:var(--yellow); grid-row:1; } .strip i.t { background:#fff; grid-row:2; }
+  .strip i.q { opacity:.5; }
+  .fin { display:grid; grid-template-rows: repeat(2, calc(17px * var(--k))); gap: calc(2px * var(--k)); }
+  .fin b { min-width: calc(28px * var(--k)); border-radius: calc(5px * var(--k)); display:flex; align-items:center; justify-content:center;
+           font-size: calc(13px * var(--k)); color:var(--ink); font-variant-numeric: tabular-nums; }
+  .fin b.u { background:var(--yellow); } .fin b.t { background:#fff; }
+  .fin b.lose { opacity:.55; }
+  .legend { font-size: calc(11px * var(--k)); color:#cfd2ff; margin-top: calc(4px * var(--k)); text-align:center; }
+  .legend b { display:inline-block; width: calc(8px * var(--k)); height: calc(8px * var(--k)); border-radius:50%; margin: 0 calc(3px * var(--k)) 0 calc(8px * var(--k)); }
+
+  /* питстоп: счёт серый и полупрозрачный, под плашкой «Счёт уточняется» */
+  .pts, .sets span { transition: opacity .4s, filter .4s; }
+  body.pit .pts, body.pit .sets span { opacity:.4; filter: grayscale(1); }
+  #pitNote { position:absolute; top: calc(42px * var(--k)); white-space:nowrap; font-size: calc(14px * var(--k)); font-weight:800; padding: calc(3px * var(--k)) calc(12px * var(--k));
+             border-radius: calc(6px * var(--k)); background:var(--navy); color:#fff; box-shadow: 0 0 0 calc(1.5px * var(--k)) var(--gold);
+             opacity:0; transform: translateY(calc(-8px * var(--k))); transition: opacity .35s, transform .35s; }
+  body.pit #pitNote { opacity:1; transform:none; }
+  body.pit #under { display:none; }
+  body.noanim * { transition:none !important; animation:none !important; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="bar">
+    <div class="name" id="nUs"><span id="tUs">Наши</span><i class="dot" id="sUs"></i></div>
+    <div class="pts" id="pUs">0</div>
+    <div class="sets" id="mid" hidden><small>партии</small><span id="sets">0 : 0</span></div>
+    <div class="pts" id="pThem">0</div>
+    <div class="name" id="nThem"><span id="tThem">Соперник</span><i class="dot" id="sThem"></i></div>
+  </div>
+  <div id="pitNote">Счёт уточняется</div>
+  <div id="under">
+    <div class="side"><span class="badge ball" id="bUs"></span><span class="badge" id="rUs"></span></div>
+    <div class="side"><span class="badge" id="rThem"></span><span class="badge ball" id="bThem"></span></div>
+  </div>
+  <div id="panel"></div>
+</div>
+<script>
+// Адрес, откуда плашка берёт счёт. Если у приложения на Replit изменится адрес, поменяйте только эту строку.
+const SCORE_URL = 'https://kamiera-tablo-fast-api--cheburek46.replit.app/score';
+
+// Параметры в ссылке: ?size=s|m|l (размер), ?anim=0 (выключить анимации, если в Moblin тормозит)
+const q = new URLSearchParams(location.search);
+document.documentElement.style.setProperty('--k', { s: 0.75, m: 1, l: 1.3 }[q.get('size')] || 1);
+if (q.get('anim') === '0') document.body.classList.add('noanim');
+const anim = q.get('anim') !== '0';
+
+const $ = id => document.getElementById(id);
+let last = null, streakKey = '', streakTimer = 0, panelKey = '';
+
+let namesKey = '';
+function fitNames(us, them) {                 // названия не обрезаем; оба блока одной ширины - плашка симметрична
+  const key = us + '|' + them;
+  if (key === namesKey) return;
+  namesKey = key;
+  const a = $('nUs'), b = $('nThem');
+  $('tUs').textContent = us; $('tThem').textContent = them;
+  for (const el of [a, b]) { el.style.width = ''; el.style.fontSize = ''; }
+  const k = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--k')) || 1;
+  const cap = 340 * k;                           // шире не растём: у обоих одинаково уменьшается шрифт
+  let w = Math.max(a.scrollWidth, b.scrollWidth);
+  if (w > cap) {
+    const f = cap / w;
+    for (const el of [a, b]) el.style.fontSize = (18 * k * f) + 'px';
+    w = Math.max(a.scrollWidth, b.scrollWidth);
+  }
+  for (const el of [a, b]) el.style.width = w + 'px';
+}
+function setNum(id, v) {
+  const el = $(id);
+  if (el.textContent !== String(v)) {
+    el.textContent = v;
+    if (anim && last) { el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash'); }
+  }
+}
+function badge(id, text) { const b = $(id); if (text) b.textContent = text; b.classList.toggle('on', !!text); }
+function strip(seq) {
+  // как в приложении судьи: столбец = номер розыгрыша, верхний ряд - наши, нижний - соперник, в кружке - счёт команды
+  let u = 0, t = 0;
+  return '<div class="strip">' + seq.map(([team, unsure], i) => {
+    const n = team === 0 ? ++u : ++t;
+    return '<i class="' + (team === 0 ? 'u' : 't') + (unsure ? ' q' : '') + '" style="grid-column:' + (i + 1) + '">' + n + '</i>';
+  }).join('') + '</div>';
+}
+function fin(f, done) {                              // итог партии столбиком; у проигравшего бледнее
+  if (!f) return '<div class="fin"></div>';
+  const lu = done && f[0] < f[1] ? ' lose' : '', lt = done && f[1] < f[0] ? ' lose' : '';
+  return '<div class="fin"><b class="u' + lu + '">' + f[0] + '</b><b class="t' + lt + '">' + f[1] + '</b></div>';
+}
+function legend(sc) {
+  return '<div class="legend"><b style="background:var(--yellow)"></b>' + sc.us.name + '<b style="background:#fff"></b>' + sc.them.name + '</div>';
+}
+function showPanel(sc) {
+  const p = $('panel');
+  let html = '', key = '';
+  if (sc.board) {                                   // «Статистика в эфир»: все партии
+    key = 'board' + JSON.stringify(sc.board.map(r => r.final));
+    html = '<div class="ttl">Статистика матча</div><table>' + sc.board.map(r =>
+      '<tr><td class="n">' + r.n + '</td><td>' + fin(r.final, r.done) + '</td><td>' + (r.nodata ? '<span style="opacity:.6">нет данных</span>' : strip(r.seq)) + '</td></tr>').join('') +
+      '</table>' + legend(sc);
+  } else if (sc.summary) {                          // итог только что закончившейся партии
+    const s = sc.summary;
+    key = 'sum' + s.n + s.end;
+    html = '<div class="ttl">Партия ' + s.n + ' · <em>' + s.final[0] + ':' + s.final[1] + '</em></div><div class="setrow">' + fin(s.final, true) + strip(s.seq) + '</div>' + legend(sc);
+  }
+  if (key !== panelKey) { panelKey = key; if (html) p.innerHTML = html; }
+  p.classList.toggle('on', !!html);
+}
+
+function render(sc) {
+  document.body.classList.toggle('pit', !!sc.pit);
+  fitNames(sc.us.name, sc.them.name);
+  setNum('pUs', sc.us.points); setNum('pThem', sc.them.points);
+  $('mid').hidden = !sc.show_sets;
+  $('sets').textContent = sc.us.sets + ' : ' + sc.them.sets;
+  $('sUs').classList.toggle('on', sc.serve === 'us');
+  $('sThem').classList.toggle('on', sc.serve === 'them');
+  const ball = sc.ball ? (sc.ball.kind === 'match' ? 'матчбол' : 'сетбол') : '';
+  badge('bUs', sc.ball && sc.ball.who === 'us' ? ball : '');
+  badge('bThem', sc.ball && sc.ball.who === 'them' ? ball : '');
+  // серия: значок выезжает на 5 секунд после каждого очка серии от трёх
+  const k = sc.streak ? sc.streak.who + sc.streak.n : '';
+  if (k !== streakKey) {
+    streakKey = k;
+    badge('rUs', ''); badge('rThem', '');
+    clearTimeout(streakTimer);
+    if (sc.streak) {
+      badge(sc.streak.who === 'us' ? 'rUs' : 'rThem', sc.streak.n + ' подряд');
+      streakTimer = setTimeout(() => { badge('rUs', ''); badge('rThem', ''); }, 5000);
+    }
+  }
+  showPanel(sc);
+  last = sc;
+}
+
+async function tick() {
+  try {
+    const sc = await (await fetch(SCORE_URL, { cache: 'no-store' })).json();
+    if (sc && sc.us) render(sc);
+  } catch (e) { /* связи нет: оставляем прошлое */ }
+}
+tick(); setInterval(tick, 1000);
+</script>
+</body>
+</html>

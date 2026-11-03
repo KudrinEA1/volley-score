@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Статистика матча</title>
+<style>
+  :root { --bg:#111315; --panel:#1c1f22; --line:#2c3136; --text:#eceef0; --muted:#8d949b; --us:#FDCD29; --them:#e8e8ee; --ink:#1F2150; }
+  * { box-sizing:border-box; }
+  html, body { margin:0; background:var(--bg); color:var(--text); font:15px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  body { padding: max(12px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) 24px max(12px, env(safe-area-inset-left)); }
+  h1 { font-size:18px; margin:0 0 4px; }
+  .top { display:flex; align-items:center; gap:10px; margin-bottom:14px; flex-wrap:wrap; }
+  .score { font-size:28px; font-weight:800; font-variant-numeric: tabular-nums; }
+  .top { flex-wrap:nowrap; }
+  .tm { color:var(--muted); flex:1; min-width:0; }
+  .tm.r { text-align:right; }
+  .sc2 { display:flex; flex-direction:column; align-items:center; line-height:1.1; }
+  .sc2 small { color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.06em; }
+  .set { background:var(--panel); border:2px solid var(--line); border-radius:12px; padding:12px 10px; margin-bottom:16px; }
+  .set h2 { font-size:15px; margin:0 0 8px; display:flex; gap:10px; align-items:baseline; flex-wrap:wrap; }
+  .set h2 .fin { font-size:20px; font-variant-numeric: tabular-nums; }
+  .set h2 .meta { color:var(--muted); font-weight:400; font-size:13px; }
+  .rows { overflow-x:auto; padding-bottom:4px; }
+  .row { display:grid; grid-auto-flow:column; grid-auto-columns:24px; gap:3px; margin:3px 0; }
+  .c { width:24px; height:24px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:800; color:var(--ink); }
+  .c.u { background:var(--us); } .c.t { background:var(--them); }
+  .c.q { opacity:.5; outline:2px dashed var(--muted); outline-offset:-2px; }
+  .lg { color:var(--muted); font-size:13px; margin-top:6px; }
+  .lg b { display:inline-block; width:10px; height:10px; border-radius:50%; margin:0 4px 0 10px; }
+  .sr { display:flex; gap:8px; align-items:flex-start; }
+  .fc { display:flex; flex-direction:column; gap:3px; margin-top:3px; flex:none; }
+  .c2 { min-width:34px; height:24px; border-radius:7px; display:flex; align-items:center; justify-content:center; font-weight:800; color:var(--ink); }
+  .c2.u { background:var(--us); } .c2.t { background:var(--them); } .c2.lose { opacity:.5; }
+  .live { color:#4cc38a; font-size:12px; font-weight:700; }
+</style>
+</head>
+<body>
+<h1>Статистика матча</h1>
+<div class="top"><span class="tm" id="nUs">Наши</span><span class="sc2"><small>партии</small><span class="score" id="sc">0 : 0</span></span><span class="tm r" id="nThem">Соперник</span></div>
+<div id="sets"></div>
+<div class="lg" id="lg"></div>
+<script>
+const $ = id => document.getElementById(id);
+function rows(seq, c) {   // c: столбец = номер розыгрыша; в кружке - счёт команды после этого очка
+  let u = 0, t = 0, top = '', bot = '';
+  seq.forEach(([team, q], i) => {
+    const col = 'grid-column:' + (i + 1);
+    if (team === 0) { u++; top += '<div class="c u' + (q ? ' q' : '') + '" style="' + col + '">' + u + '</div>'; }
+    else { t++; bot += '<div class="c t' + (q ? ' q' : '') + '" style="' + col + '">' + t + '</div>'; }
+  });
+  return '<div class="rows"><div class="row">' + top + '</div><div class="row">' + bot + '</div></div>';
+}
+function finCol(f, done) {     // итог партии столбиком, как в приложении судьи; у проигравшего бледнее
+  if (!f) return '';
+  const lu = done && f[0] < f[1] ? ' lose' : '', lt = done && f[1] < f[0] ? ' lose' : '';
+  return '<div class="fc"><b class="c2 u' + lu + '">' + f[0] + '</b><b class="c2 t' + lt + '">' + f[1] + '</b></div>';
+}
+async function tick() {
+  try {
+    const d = await (await fetch('/stats.json', { cache: 'no-store' })).json();
+    $('nUs').textContent = d.names.us; $('nThem').textContent = d.names.them;
+    $('sc').textContent = d.score.us.sets + ' : ' + d.score.them.sets;
+    $('sets').innerHTML = d.table.slice().reverse().map(r =>
+      '<div class="set"><h2>Партия ' + r.n + ' <span class="fin">' + (r.final ? r.final[0] + ':' + r.final[1] : '') + '</span>' +
+      (r.nodata ? '' : '<span class="meta">' + r.minutes + ' мин' + (r.partial ? ' · неполная запись' : '') + '</span>') +
+      (r.nodata ? '<span class="meta">нет данных</span>' : r.done ? '' : '<span class="live">идёт</span>') + '</h2>' + (r.nodata ? '' : '<div class="sr">' + finCol(r.final, r.done) + rows(r.seq) + '</div>') + '</div>').join('');
+    $('lg').innerHTML = '<b style="background:var(--us)"></b>' + d.names.us + '<b style="background:var(--them)"></b>' + d.names.them +
+      ' · полупрозрачные кружки: порядок очков неизвестен (счёт перелистнули сразу на несколько очков)';
+  } catch (e) { /* связи нет */ }
+}
+tick(); setInterval(tick, 3000);
+</script>
+</body>
+</html>
