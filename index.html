@@ -255,7 +255,7 @@
   </details>
 
   <button id="matchEnd" class="danger" style="width:100%">Завершить матч</button>
-  <div id="build">Сборка 12</div>
+  <div id="build">Сборка 13</div>
   <canvas id="crop" width="2" height="2"></canvas>
 </section>
 
@@ -269,7 +269,7 @@
   </div>
 </div>
 <script>
-const BUILD = 12;
+const BUILD = 13;
 const CONTROL = location.pathname.replace(/\/+$/, '') === '/control';    // пульт: та же страница без камеры
 const $ = id => document.getElementById(id);
 const video = $('v'), stage = $('stage'), box = $('box'), crop = $('crop');
@@ -333,6 +333,7 @@ function applyScore(sc) {
   }
   if (sc.air) { source = sc.air.source; document.body.classList.toggle('manualmode', source === 'manual'); showSource(); }
   checkBuild(sc.build);
+  maybeRestore(sc);
   renderBar();
   if (!namesFilled) { $('inUs').value = sc.us.name; $('inThem').value = sc.them.name; namesFilled = true; }
   const v = sideVals(sc);
@@ -469,6 +470,32 @@ async function pollScore() {
 }
 setInterval(pollScore, 2000); pollScore();
 setInterval(renderBar, 1000);
+
+// ---------- копия счёта на этом телефоне ----------
+// Хостинг при перезапуске стирает данные сервера. Каждые 5 с страница забирает полную копию (/backup) и хранит у себя.
+// Сервер запустился пустым (fresh) - копия уходит обратно (/restore), и счёт продолжается с того же места.
+let restoreTried = '';
+function savedBackup() { try { return JSON.parse(lget('backup') || 'null'); } catch (e) { return null; } }
+async function keepBackup() {
+  try {
+    const b = await (await fetch('/backup', { cache: 'no-store' })).json();
+    if (!b || !b.state) return;
+    const old = savedBackup();
+    if (b.fresh && !b.restored && old && old.boot !== b.boot) return;   // сервер пустой и ещё не восстановлен: свою копию не затираем
+    lset('backup', JSON.stringify(b));
+  } catch (e) { /* связи нет */ }
+}
+async function maybeRestore(sc) {
+  if (!sc.fresh || !sc.boot || restoreTried === sc.boot) return;
+  const b = savedBackup();
+  if (!b || !b.state || b.boot === sc.boot) return;
+  restoreTried = sc.boot;
+  try {
+    const j = await post('/restore', b);
+    if (j.ok) setStatus('Сервер перезапускался — счёт восстановлен с этого телефона. Проверьте его.', 'ok');
+  } catch (e) { restoreTried = ''; }                      // не дошло - попробуем при следующем опросе
+}
+setInterval(keepBackup, 5000); setTimeout(keepBackup, 1500);
 
 // ---------- номер сборки ----------
 function checkBuild(b) {

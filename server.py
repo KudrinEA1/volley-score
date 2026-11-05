@@ -24,6 +24,8 @@
   POST /pit/start  /pit/draft {"seq":[[команда 0/1, порядок неизвестен 0/1]...], "sets":[наши, соперник]}  /pit/done  /pit/cancel
   GET  /stats       страница статистики матча;  GET /stats.json - то же данными
   GET  /version     номер сборки
+  GET  /backup      полная копия состояния (её хранят телефоны)
+  POST /restore     вернуть копию на сервер, запустившийся пустым (после перезапуска хостинга)
   POST /adjust      {"who": "us|them", "field": "points|sets", "delta": 1|-1}
   POST /reset       обнулить счёт
   POST /names       {"us": "...", "them": "..."}
@@ -60,7 +62,7 @@ FRAMES_DIR = os.path.join(DATA, "frames")
 os.makedirs(FRAMES_DIR, exist_ok=True)
 MAX_FRAMES = 400
 MAX_LOST_CROPS = 100                   # нечитаемые кадры-вырезки: не больше стольких, чтобы они не вытесняли всё остальное
-BUILD = 12                             # номер сборки: страница сверяет его со своим
+BUILD = 13                           # номер сборки: страница сверяет его со своим
 FLOG = {"pts": None, "saved": 0.0}
 
 # Эфир. Счёт на плашке меняет только ГЛАВНАЯ камера: страница, на которой последней нажали «В эфир».
@@ -72,8 +74,18 @@ try:
     with open(AIR_PATH, encoding="utf-8") as _f:
         _a = json.load(_f)
         AIR["source"] = _a.get("source", "camera")
+        AIR["cid"] = _a.get("cid")                     # главная камера помнится и после перезапуска сервера
 except (OSError, ValueError):
     _a = {}
+
+# ---------- копия состояния на телефонах ----------
+# На бесплатном хостинге папка data/ стирается при каждом перезапуске. Поэтому страницы (телефон B и пульты)
+# каждые несколько секунд забирают копию /backup и хранят её у себя. Сервер запустился пустым (fresh) -
+# страница присылает копию в /restore, и счёт продолжается с того же места.
+BOOT = os.urandom(6).hex()                             # метка запуска: сменилась - значит, сервер перезапускался
+RESTORE = {"fresh": not os.path.exists(os.path.join(DATA, "state.json")),   # пустой запуск: копию можно принять
+           "saved": 0.0, "at": 0.0}
+RESTORED_SHOW_SEC = 120
 SETTINGS = {"serve": bool(_a.get("serve", True))}       # настройки с телефона B: показывать ли точку подачи
 STATS = MatchStats(path=os.path.join(DATA, "stats.json"))
 SHOW = {"until": 0.0}                    # «Статистика в эфир»: до какого времени показывать таблицу на плашке
@@ -248,9 +260,83 @@ def side_answer(us_left):
 def save_air():
     try:
         with open(AIR_PATH, "w", encoding="utf-8") as f:
-            json.dump({"source": AIR["source"], "serve": SETTINGS["serve"]}, f)
+            json.dump({"source": AIR["source"], "serve": SETTINGS["serve"], "cid": AIR["cid"]}, f)
     except OSError:
         pass
+
+
+def backup():
+    """Полная копия состояния для хранения на телефонах (/backup)."""
+    state = None
+    try:
+        with open(STATE.path, encoding="utf-8") as f:
+            state = json.load(f)
+    except (OSError, ValueError):
+        pass
+    matches = {}
+    for name in sorted(x for x in os.listdir(MATCHES_DIR) if x.endswith(".json"))[-10:]:
+        try:
+            with open(os.path.join(MATCHES_DIR, name), encoding="utf-8") as f:
+                matches[name] = json.load(f)
+        except (OSError, ValueError):
+            pass
+    return {"boot": BOOT, "build": BUILD, "saved": time.time(), "fresh": RESTORE["fresh"],
+            "restored": bool(RESTORE["at"]), "state": state, "stats": STATS.dump(),
+            "match": dict(MATCH), "air": {"source": AIR["source"], "serve": SETTINGS["serve"], "cid": AIR["cid"]},
+            "matches": matches}
+
+
+def restore(b):
+    """Принять копию с телефона. Только если сервер запустился пустым и после запуска счёт никто не трогал;
+    из нескольких копий (несколько телефонов) остаётся самая свежая."""
+    if not RESTORE["fresh"]:
+        return False, "сервер не пустой: копия не нужна"
+    if not isinstance(b, dict) or b.get("boot") == BOOT or not isinstance(b.get("state"), dict):
+        return False, "копия не подходит"
+    saved = float(b.get("saved") or 0)
+    now = time.time()
+    if RESTORE["at"] and now - RESTORE["at"] > 60:
+        return False, "восстановление уже было, счёт ушёл вперёд"
+    if saved <= RESTORE["saved"]:
+        return False, "уже восстановлено из более свежей копии"
+    with open(STATE.path, "w", encoding="utf-8") as f:
+        json.dump(b["state"], f, ensure_ascii=False)
+    with STATE.lock:
+        STATE.load()
+        STATE._pc, STATE._pn, STATE._sc, STATE._sn, STATE._fin_n = None, 0, None, 0, 0
+        STATE.status = "счёт восстановлен после перезапуска сервера"
+        STATE.updated = now
+        STATE.last_ok = now
+    if isinstance(b.get("stats"), dict) and b["stats"].get("sets"):
+        STATS.restore(b["stats"])
+    if isinstance(b.get("match"), dict):
+        MATCH.update(b["match"])
+        MATCH["grace"] = now + PIT_GRACE_SEC               # сразу после восстановления автопитстоп не включаем
+        MATCH["mirror_since"] = None
+        save_match()
+    STATE.strict = MATCH["active"]
+    a = b.get("air") or {}
+    if a.get("source") in ("camera", "manual"):
+        AIR["source"] = a["source"]
+    if "serve" in a:
+        SETTINGS["serve"] = bool(a["serve"])
+    if a.get("cid") and not AIR["cid"]:
+        AIR["cid"], AIR["last"] = str(a["cid"])[:12], now
+    save_air()
+    for name, rec in (b.get("matches") or {}).items():
+        name = os.path.basename(str(name))
+        p = os.path.join(MATCHES_DIR, name)
+        if name.endswith(".json") and not os.path.exists(p):
+            try:
+                with open(p, "w", encoding="utf-8") as f:
+                    json.dump(rec, f, ensure_ascii=False)
+            except OSError:
+                pass
+    us, th, _, _ = _team_pts()
+    SERVE.update(prev=(us, th), who=None, hist=[])
+    LASTS.clear()
+    RESTORE.update(saved=saved, at=now)
+    return True, "счёт восстановлен"
 
 
 def _serve(sc):
@@ -286,6 +372,8 @@ def payload():
     age = round(now - AIR["last"], 1) if AIR["cid"] and AIR["last"] else None
     s["air"] = {"on": bool(AIR["cid"]), "source": AIR["source"], "frame_age": age}
     s["build"] = BUILD
+    s["boot"] = BOOT
+    s["fresh"] = RESTORE["fresh"]
     s["settings"] = dict(SETTINGS)
     s["serve"] = SERVE["who"] if SETTINGS["serve"] else None
     s["ball"] = None                                       # сетбол / матчбол
@@ -308,6 +396,9 @@ def payload():
     ms = MATCH.get("mirror_since")
     if MATCH["active"] and ms and now - ms > MIRROR_SEC:
         s["match"]["warn"] = "Похоже, стороны перепутаны: камера видит зеркальный счёт. Проверьте «Наши слева / справа»."
+    elif RESTORE["at"] and now - RESTORE["at"] < RESTORED_SHOW_SEC:
+        s["match"]["warn"] = ("Сервер перезапускался. Счёт восстановлен с телефона в "
+                              + time.strftime("%H:%M", time.localtime(RESTORE["at"])) + " — проверьте его.")
     if pit:                                             # плашка: серый счёт, «Счёт уточняется», значки скрыты
         s["pit"] = True
         s["serve"] = None
@@ -437,6 +528,9 @@ def process_frame(data, swap, mode="crop", cid="anon", air=False):
     if cid == "anon":                       # страница без идентификатора - это старая версия, её кадры не берём
         return {"ok": False, "build": BUILD,
                 "error": "Старая страница. Закройте эту вкладку и откройте ссылку заново"}
+    if air and AIR["cid"] is None:          # эфир никто не держит (например, сервер перезапустился), а страница в эфире - она и главная
+        AIR["cid"], AIR["last"] = cid, time.time()
+        save_air()
     main = air and AIR["cid"] == cid
     evicted = air and not main              # эту страницу сняли с эфира: эфир взяла другая
     img = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
@@ -534,6 +628,8 @@ class Handler(BaseHTTPRequestHandler):
             self._file("index.html", "text/html; charset=utf-8")
         elif path == "/version":
             self._send(200, {"build": BUILD})
+        elif path == "/backup":
+            self._send(200, backup())
         elif path == "/control":
             self._file("index.html", "text/html; charset=utf-8")         # пульт: та же страница, без камеры
         elif path == "/stats":
@@ -577,8 +673,14 @@ class Handler(BaseHTTPRequestHandler):
         data = self._body()
         if data is None:
             return self._send(400, {"ok": False, "error": "пустое или слишком большое тело"})
+        if u.path not in ("/frame", "/air", "/restore"):
+            RESTORE["fresh"] = False                # счёт тронули руками: копию с телефона больше не принимаем
         try:
-            if u.path == "/frame":
+            if u.path == "/restore":
+                with FRAME_LOCK:                    # пока восстанавливаем, кадры не обрабатываются
+                    ok, msg = restore(json.loads(data))
+                self._send(200, {"ok": ok, "message": msg, "score": payload()})
+            elif u.path == "/frame":
                 q = parse_qs(u.query)
                 swap = q.get("swap", ["0"])[0] == "1"
                 mode = "full" if q.get("mode", ["crop"])[0] == "full" else "crop"
@@ -594,6 +696,7 @@ class Handler(BaseHTTPRequestHandler):
                     AIR["cid"], AIR["last"] = cid, time.time()          # эфир берёт эта страница, прежняя главная снимается
                 elif AIR["cid"] == cid:
                     AIR["cid"] = None
+                save_air()
                 self._send(200, {"ok": True, "main": AIR["cid"] == cid, "score": payload()})
             elif u.path == "/source":
                 j = json.loads(data)
