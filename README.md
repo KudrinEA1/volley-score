@@ -7,14 +7,16 @@
 - **Плашка со счётом** (`plashka.html`) лежит на GitHub Pages в репозитории [KudrinEA1/plashka](https://github.com/KudrinEA1/plashka). Её показывает приложение Moblin на **телефоне A**, который ведёт трансляцию.
 - **Пульт** `/control` открывается с любого телефона.
 
-Актуальная сборка: **14**.
+Актуальная сборка: **15**.
 
 ## Ссылки
 
 | Что | Адрес |
 |---|---|
-| Сервер (новый, Render) | *появится после создания сервера на Render* |
-| Сервер (старый, Replit, до ~17.11.2026) | https://kamiera-tablo-fast-api--cheburek46.replit.app |
+| Сервер (Render) | https://volley-score-ge5c.onrender.com |
+| Пульт | https://volley-score-ge5c.onrender.com/control |
+| Панель Render | https://dashboard.render.com (сервис `volley-score`) |
+| Сервер (старый, Replit, до ~17.11.2026, больше не используется) | https://kamiera-tablo-fast-api--cheburek46.replit.app |
 | Плашка для Moblin | https://kudrinea1.github.io/plashka/plashka.html |
 | Код плашки | https://github.com/KudrinEA1/plashka |
 
@@ -27,7 +29,7 @@
 | `GET /overlay` | копия плашки, берёт счёт с этого же сервера |
 | `GET /score` | счёт в формате JSON, его читает плашка |
 | `GET /stats`, `/stats.json` | статистика матча |
-| `GET /version` | номер сборки, например `{"build": 14}` |
+| `GET /version` | номер сборки, например `{"build": 15}` |
 | `GET /backup` | полная копия состояния; страницы забирают её каждые 5 с и хранят у себя |
 | `POST /restore` | вернуть копию на сервер, запустившийся пустым |
 | `GET /latest.jpg` | последний кадр |
