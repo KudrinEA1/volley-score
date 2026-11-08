@@ -468,100 +468,185 @@ def _read_mono(bgr):
     return {"mode": "mono", "left": {"points": lp, "sets": None}, "right": {"points": rp, "sets": None}}
 
 
-# ====================== табло из белых карточек с тёмными или цветными цифрами (синее перекидное) ======================
-# слева большая карточка (очки левых, например зелёные), справа большая (очки правых, чёрные), между ними маленькие
-# карточки партий (красные). Партии отсюда не читаются.
-def _white_mask(bgr, hsv=None):
-    hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV) if hsv is None else hsv
-    m = ((hsv[:, :, 1] < 70) & (hsv[:, :, 2] > 150)).astype(np.uint8) * 255
-    return cv2.morphologyEx(m, cv2.MORPH_CLOSE, np.ones((9, 9), np.uint8))
+# ====================== перекидное табло TORRES SS1005 ======================
+# Синий корпус с надписью HOME TORRES GUEST внизу. Сверху висят белые карточки: по краям большие (очки: слева зелёные
+# цифры, справа чёрные), в середине маленькие (партии, красные цифры). Цифры ищутся ТОЛЬКО своего цвета и ТОЛЬКО
+# внутри белых карточек, стоящих на синем корпусе: надпись, пол, сетка и тени за цифры не принимаются.
+TORRES_EMPTY = "torres"
 
 
-def _white_boards(bgr, hsv=None):
-    """Белые пятна табло (карточки стоят вплотную и сливаются): [(рамка x0, y0, x1, y1, залитый контур)], крупные первыми."""
-    H, W = bgr.shape[:2]
-    m = _white_mask(bgr, hsv)
+def _blue_bodies(hsv, min_frac=0.003):
+    """Синие корпуса табло: [(x, y, w, h)], крупные первыми."""
+    H, W = hsv.shape[:2]
+    m = cv2.inRange(hsv, (95, 110, 45), (128, 255, 255))
+    m = cv2.morphologyEx(m, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
     cnts, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     out = []
     for c in sorted(cnts, key=cv2.contourArea, reverse=True)[:3]:
         x, y, w, h = cv2.boundingRect(c)
-        if w * h < 0.01 * W * H or w < 1.2 * h or cv2.contourArea(c) < 0.4 * w * h:
-            continue
-        fill = np.zeros((H, W), np.uint8)
-        cv2.drawContours(fill, [c], -1, 255, -1)
-        out.append(((x, y, x + w, y + h), fill))
+        if cv2.contourArea(c) >= min_frac * H * W and w >= 1.3 * h * 0.5 and w >= 0.05 * W:
+            out.append((x, y, w, h))
     return out
 
 
-def _board_groups(bgr, hsv, box, fill):
-    """Цифры внутри белого табло -> группы (числа) слева направо: [(x0, y0, x1, y1, маска)] только самые высокие (очки)."""
-    x0, y0, x1, y1 = box
-    g = cv2.cvtColor(bgr[y0:y1, x0:x1], cv2.COLOR_BGR2GRAY)
-    s = hsv[y0:y1, x0:x1, 1]
-    inside = fill[y0:y1, x0:x1] > 0
-    paper = float(np.percentile(g[inside], 70)) if inside.any() else 200.0
-    ink = ((((g < paper - 70) | (s > 90)) & inside).astype(np.uint8)) * 255       # тёмное или цветное на белом
-    ink = cv2.morphologyEx(ink, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
-    n, lab, st, _ = cv2.connectedComponentsWithStats(ink)
-    hh = y1 - y0
-    comps = []
-    for i in range(1, n):
-        x, y, w, h, area = [int(v) for v in st[i]]
-        if h < 0.2 * hh or w < 0.12 * h or w > 1.2 * h or area < 60:
-            continue                                                # мелочь, тени между карточками, полосы
-        if area / h < 0.07 * h:
-            continue                                                # тонкая линия (край карточки, тень), даже наклонная
-        if y <= 1 and y + h >= hh - 1:
+def _torres_cards(hsv, body):
+    """Белые карточки на синем корпусе: [(x, y, w, h)] и залитая маска карточек."""
+    H, W = hsv.shape[:2]
+    bx, by, bw, bh = body
+    s, v = hsv[:, :, 1], hsv[:, :, 2]
+    low = s < 60
+    ref = float(np.percentile(v[low], 97)) if low.any() else 255.0  # самое светлое бесцветное в кадре: бумага карточек
+    white = ((s < 90) & (v > max(90.0, 0.55 * ref))).astype(np.uint8) * 255   # карточка в тени тоже "белая"
+    white = cv2.morphologyEx(white, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
+    cnts, _ = cv2.findContours(white, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    cards, fill, raw = [], np.zeros((H, W), np.uint8), np.zeros((H, W), np.uint8)
+    for c in cnts:
+        x, y, w, h = cv2.boundingRect(c)
+        if h < 0.18 * bh or h < 12 or not 0.35 * h <= w <= 3.2 * h:
+            continue                                                # буквы надписи, блики, полосы
+        if cv2.contourArea(c) < 0.45 * w * h:
             continue
-        comps.append([x, y, x + w, y + h, i])
+        cx = x + w / 2
+        if not bx - 0.05 * bw <= cx <= bx + 1.05 * bw:
+            continue                                                # не над этим корпусом
+        if y + h < by - 0.15 * h or y > by + 0.55 * bh:
+            continue                                                # карточки висят на верхней части корпуса
+        cards.append((x, y, w, h))
+        cv2.drawContours(fill, [cv2.convexHull(c)], -1, 255, -1)    # цифра у края "разрезает" белое: берём оболочку карточки
+        cv2.drawContours(raw, [c], -1, 255, -1)
+    if cards:                                                       # но оболочка захватывает и пол между карточками:
+        d = max(3, int(0.08 * max(c[3] for c in cards)))            # оставляем только то, что рядом с белой бумагой
+        fill &= cv2.dilate(raw, np.ones((d, d), np.uint8))
+    return cards, fill, raw
+
+
+def _ink_groups(mask, hmin, min_gap):
+    """Цифры одного цвета -> числа слева направо: [(x0, x1, маска цифр)]. Мелочь и тонкие линии отбрасываются."""
+    n, lab, st, _ = cv2.connectedComponentsWithStats(mask)
+    H, W = mask.shape
+    parts = [[int(st[i, 0]), int(st[i, 1]), int(st[i, 0] + st[i, 2]), int(st[i, 1] + st[i, 3]), [i]]
+             for i in range(1, n) if st[i, cv2.CC_STAT_AREA] >= 25]
+    merged = True                                                   # издалека цифра рвётся на куски (у 7 отрывается ножка):
+    while merged:                                                   # куски друг над другом склеиваются обратно
+        merged = False
+        for a in range(len(parts)):
+            for b in range(a + 1, len(parts)):
+                p, q = parts[a], parts[b]
+                over = min(p[2], q[2]) - max(p[0], q[0])
+                gap = max(p[1], q[1]) - min(p[3], q[3])
+                if over >= 0.5 * min(p[2] - p[0], q[2] - q[0]) and gap <= 0.25 * max(p[3] - p[1], q[3] - q[1]):
+                    parts[a] = [min(p[0], q[0]), min(p[1], q[1]), max(p[2], q[2]), max(p[3], q[3]), p[4] + q[4]]
+                    del parts[b]
+                    merged = True
+                    break
+            if merged:
+                break
+    comps = []
+    for x0, y0, x1, y1, ids in parts:
+        w, h = x1 - x0, y1 - y0
+        if h < hmin or w < 0.12 * h or w > 1.3 * h:
+            continue
+        if x0 <= 1 or y0 <= 1 or x1 >= W - 1 or y1 >= H - 1:
+            continue                                                # цифра обрезана краем кадра: прочтётся неверно (0 как 1)
+        m = np.isin(lab[y0:y1, x0:x1], ids).astype(np.uint8)
+        if cv2.distanceTransform(m, cv2.DIST_L2, 3).max() < 0.03 * h:
+            continue                                                # тонкая линия: край карточки, тень (у цифры штрих толще)
+        comps.append([x0, y0, x1, y1, ids])
     if not comps:
         return []
     hmax = max(c[3] - c[1] for c in comps)
-    tall = sorted(c for c in comps if c[3] - c[1] >= 0.75 * hmax)    # очки - самые крупные цифры; партии мельче
+    comps = sorted((c for c in comps if c[3] - c[1] >= 0.6 * hmax), key=lambda c: c[0])
     groups = []
-    for c in tall:
-        if groups and c[0] - groups[-1][2] <= 0.35 * (c[3] - c[1]):
-            gr = groups[-1]
-            gr[:4] = [min(gr[0], c[0]), min(gr[1], c[1]), max(gr[2], c[2]), max(gr[3], c[3])]
-            gr[4].append(c[4])
+    for c in comps:
+        if groups and c[0] - groups[-1][1] <= min_gap * (c[3] - c[1]):
+            groups[-1][1] = max(groups[-1][1], c[2])
+            groups[-1][2] += c[4]
         else:
-            groups.append([c[0], c[1], c[2], c[3], [c[4]]])
-    out = []
-    for gx0, gy0, gx1, gy1, ids in groups:
-        m = np.isin(lab[gy0:gy1, gx0:gx1], ids).astype(np.uint8) * 255
-        out.append((gx0, gy0, gx1, gy1, m))
-    return out
+            groups.append([c[0], c[2], list(c[4])])
+    return [(x0, x1, np.isin(lab, ids).astype(np.uint8) * 255) for x0, x1, ids in groups]
 
 
-def _read_cards(bgr, hsv):
-    for box, fill in _white_boards(bgr, hsv):
-        groups = _board_groups(bgr, hsv, box, fill)
-        if len(groups) < 2:
+def _read_torres(bgr, hsv):
+    """Табло TORRES. None - такого табло в кадре нет. Иначе показание (очки None, если карточки не читаются)."""
+    H, W = bgr.shape[:2]
+    for body in _blue_bodies(hsv):
+        cards, fill, raw = _torres_cards(hsv, body)
+        if not cards:
+            if body[2] * body[3] >= 0.12 * H * W and _has_letters(hsv, body):
+                return _torres_empty()                              # виден корпус с надписью HOME TORRES GUEST, карточек нет
             continue
-        vals = []
-        for gr in (groups[0], groups[-1]):
-            crop = _crop_digits(gr[4])
-            vals.append([] if crop is None else _ocr_options(crop, 2))
-        lp, rp = _pick_points(vals[0], vals[1])
-        return {"mode": "cards", "left": {"points": lp, "sets": None}, "right": {"points": rp, "sets": None}}
+        ch = max(c[3] for c in cards)
+        inside = cv2.erode(fill, np.ones((5, 5), np.uint8))
+        hs, s, v = hsv[:, :, 0], hsv[:, :, 1], hsv[:, :, 2]
+        paper = float(np.percentile(v[inside > 0], 80)) if inside.any() else 200.0
+        green = (hs >= 35) & (hs <= 95) & (s > 60) & (v > 35)
+        red = ((hs <= 12) | (hs >= 165)) & (s > 80) & (v > 50)
+        k = np.ones((3, 3), np.uint8)
+        red_in = cv2.erode(raw, np.ones((3, 3), np.uint8)) > 0                     # партии - в середине карточки, пол рядом красный
+        red_mask = cv2.morphologyEx((red & red_in).astype(np.uint8) * 255, cv2.MORPH_OPEN, k)
+        near_red = cv2.dilate(red_mask, np.ones((7, 7), np.uint8)) > 0             # тёмная кайма красных цифр - не чёрные очки
+        dark = (v < 0.5 * paper) & (s < 110) & ~green & ~red & ~near_red          # чёрная краска бесцветная; синий корпус - нет
+        kk = np.ones((max(3, int(0.025 * ch)),) * 2, np.uint8)                   # рвёт тонкие края карточек и тени, штрих цифры толще
+        masks = [cv2.morphologyEx((m & (inside > 0)).astype(np.uint8) * 255, cv2.MORPH_OPEN, kk) for m in (green, dark)]
+        # каждый цвет группируется отдельно: зелёные очки не склеятся с чёрными через мусор между карточками
+        pts = sorted(_ink_groups(masks[0], 0.3 * ch, 0.45) + _ink_groups(masks[1], 0.3 * ch, 0.45), key=lambda g: g[0])
+        sets = _ink_groups(red_mask, 0.2 * ch, 0.45)
+        res = _torres_empty()
+        if len(pts) >= 2:
+            vals = []
+            for _, _, m in (pts[0], pts[-1]):
+                crop = _crop_digits(m)
+                vals.append([] if crop is None else _ocr_options(crop, 2))
+            lp, rp = _pick_points(vals[0], vals[1])
+            res["left"]["points"], res["right"]["points"] = lp, rp
+        if len(sets) >= 2:
+            sv = []
+            for _, _, m in (sets[0], sets[-1]):
+                crop = _crop_digits(m)
+                o = [] if crop is None else _ocr_options(crop, 1)
+                sv.append(o[0][0] if o else None)
+            if None not in sv and valid_sets(*sv):
+                res["left"]["sets"], res["right"]["sets"] = sv
+        return res
     return None
 
 
-def _cards_candidates(img, hsv):
+def _has_letters(hsv, body):
+    """На синем есть ряд белых букв (надпись табло), а не просто синяя стена или мат."""
+    x, y, w, h = body
+    sub = hsv[y:y + h, x:x + w]
+    m = ((sub[:, :, 1] < 90) & (sub[:, :, 2] > 150)).astype(np.uint8) * 255
+    n, _, st, _ = cv2.connectedComponentsWithStats(m)
+    letters = [st[i] for i in range(1, n) if 0.08 * h <= st[i, 3] <= 0.6 * h and st[i, 2] <= 1.2 * st[i, 3] and st[i, 4] >= 20]
+    return len(letters) >= 5
+
+
+def _torres_empty():
+    return {"mode": TORRES_EMPTY, "left": {"points": None, "sets": None}, "right": {"points": None, "sets": None}}
+
+
+def _torres_candidates(img, hsv):
+    """Рамка вокруг корпуса TORRES и карточек на нём."""
     h_img, w_img = img.shape[:2]
     out = []
-    for (x0, y0, x1, y1), _ in _white_boards(img, hsv)[:1]:
-        mx, my = int(0.06 * (x1 - x0)), int(0.15 * (y1 - y0))
+    for body in _blue_bodies(hsv, min_frac=0.0015):
+        cards = _torres_cards(hsv, body)[0]
+        if sum(c[2] for c in cards) < 0.5 * body[2]:
+            continue                                                # карточки часто сливаются в одну полосу: важна общая ширина
+        xs = [body[0], body[0] + body[2]] + [c[0] for c in cards] + [c[0] + c[2] for c in cards]
+        ys = [body[1], body[1] + body[3]] + [c[1] for c in cards] + [c[1] + c[3] for c in cards]
+        x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
+        mx, my = int(0.08 * (x1 - x0)), int(0.12 * (y1 - y0))
         out.append((max(0, x0 - mx), max(0, y0 - my), min(w_img, x1 + mx), min(h_img, y1 + my)))
-    return out
+    return out[:2]
 
 
 def read_board(bgr):
     if not _BUDGET["outer"]:
         _BUDGET["until"] = time.time() + READ_BUDGET
     h, w = bgr.shape[:2]
-    if w != WIDTH:
-        bgr = cv2.resize(bgr, (WIDTH, max(1, int(h * WIDTH / w))), interpolation=cv2.INTER_AREA)
+    if w != WIDTH:                                                  # уменьшение - INTER_AREA, увеличение (табло издалека) - сглаженное
+        bgr = cv2.resize(bgr, (WIDTH, max(1, int(h * WIDTH / w))), interpolation=cv2.INTER_AREA if w > WIDTH else cv2.INTER_CUBIC)
     hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
     empty = {"mode": None, "left": {"points": None, "sets": None}, "right": {"points": None, "sets": None}}
 
@@ -569,10 +654,9 @@ def read_board(bgr):
         return bool(r) and r["left"]["points"] is not None and r["right"]["points"] is not None
 
     first = None                                                    # первый вид, который хотя бы опознан (для отчёта, если ничего не прочиталось)
-    r = _read_cards(bgr, hsv)                                       # белое табло с карточками: быстрый путь первым
-    if ok(r):
-        return r
-    first = r
+    r = _read_torres(bgr, hsv)                                      # перекидное TORRES: быстрый путь первым
+    if r is not None:
+        return r                                                    # это табло опознано: другие способы не пробуем (они читали надпись и пол как цифры)
     yellow = _yellow_mask(bgr, hsv)
     if yellow.mean() / 255 > 0.008:
         points, sets = _read_yellow(hsv, yellow, bgr)
@@ -690,7 +774,7 @@ def find_board(bgr):
     img = cv2.resize(bgr, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA) if scale < 1 else bgr
     h, w = img.shape[:2]
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-    candidates = (_cards_candidates(img, hsv) + _yellow_candidates(img, hsv)[:MAX_TRIES] + _color_candidates(img, hsv)[:1]
+    candidates = (_torres_candidates(img, hsv) + _yellow_candidates(img, hsv)[:MAX_TRIES] + _color_candidates(img, hsv)[:1]
                   + _mono_candidates(img)[:MAX_TRIES])
     _BUDGET["until"], _BUDGET["outer"] = time.time() + SEARCH_BUDGET, True       # общее время на весь поиск
     try:

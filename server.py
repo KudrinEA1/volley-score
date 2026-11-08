@@ -60,10 +60,20 @@ MAX_BODY = 5_000_000
 FRAMES_KEY = os.environ.get("FRAMES_KEY", "volley-7QmK3xP2")
 FRAMES_DIR = os.path.join(DATA, "frames")
 os.makedirs(FRAMES_DIR, exist_ok=True)
-MAX_FRAMES = 400
-MAX_LOST_CROPS = 100                   # нечитаемые кадры-вырезки: не больше стольких, чтобы они не вытесняли всё остальное
-BUILD = 20             # номер сборки: страница сверяет его со своим
+MAX_FRAMES = 1500
+MAX_LOST_CROPS = 600                   # нечитаемые кадры-вырезки: не больше стольких, чтобы они не вытесняли всё остальное
+BUILD = 21             # номер сборки: страница сверяет его со своим
 FLOG = {"pts": None, "saved": 0.0}
+SAMPLE_SEC = 5                         # кроме изменений, кадр сохраняется раз в столько секунд (для разбора игры)
+
+# Бэкап кадров и журнала в закрытый репозиторий GitHub: хостинг при перезапуске стирает data/, GitHub - нет.
+# GH_TOKEN - ключ доступа только к этому репозиторию (задаётся в настройках Render, в коде его нет).
+GH_TOKEN = os.environ.get("GH_TOKEN", "").strip()
+GH_REPO = os.environ.get("GH_FRAMES_REPO", "KudrinEA1/volley-frames").strip()
+UPLOAD_EVERY = 120                     # секунд между отправками
+UPLOAD_MAX_FILES = 250                 # кадров в одной отправке (архив должен быть меньше ~50 МБ)
+UPLOAD = {"files": [], "log": [], "ok": None, "err": None, "sent": 0, "busy": False}
+UPLOAD_LOCK = threading.Lock()
 
 # Эфир. Счёт на плашке меняет только ГЛАВНАЯ камера: страница, на которой последней нажали «В эфир».
 # Остальные страницы работают в режиме «Проверка»: табло ищут и читают, но счёт не трогают.
@@ -163,6 +173,8 @@ def match_end():
     MATCH.update(active=False, pit=None, prompt=None)
     STATE.strict = False
     save_match()
+    log_frame({"t": round(time.time(), 2), "event": "match_end", "match": rec})   # итог матча - в журнал бэкапа
+    threading.Thread(target=upload_frames, daemon=True).start()     # кадры матча - в GitHub сразу, не ждать
     return name
 
 
@@ -502,14 +514,15 @@ def _us_them():
 
 
 def save_frame(data, mode, reading, took_ms, cid="anon", ignored=False):
-    """Сохраняем кадр, когда показание изменилось, когда табло не читается (не чаще раза в 3 с) и просто раз в 20 с."""
+    """Сохраняем кадр, когда показание изменилось, когда табло не читается (не чаще раза в 3 с) и просто раз в 5 с.
+    Возвращает имя файла или None."""
     now = time.time()
     pts = (reading["left"]["points"], reading["right"]["points"]) if reading and reading.get("mode") else None
     unreadable = pts is None or None in pts
     changed = pts != FLOG["pts"]
     FLOG["pts"] = pts
-    if not (changed or (unreadable and now - FLOG["saved"] >= 3) or now - FLOG["saved"] >= 20):
-        return
+    if not (changed or (unreadable and now - FLOG["saved"] >= 3) or now - FLOG["saved"] >= SAMPLE_SEC):
+        return None
     FLOG["saved"] = now
     flag = "LOST" if unreadable else ("chg" if changed else "smp")
     lr = "x-x" if unreadable and pts is None else f"{pts[0]}-{pts[1]}"
@@ -528,6 +541,82 @@ def save_frame(data, mode, reading, took_ms, cid="anon", ignored=False):
         try:
             os.remove(os.path.join(FRAMES_DIR, old))
         except OSError:
+            pass
+    with UPLOAD_LOCK:
+        UPLOAD["files"].append(name)
+        del UPLOAD["files"][:-3000]                                 # без ключа GitHub очередь не растёт бесконечно
+    return name
+
+
+def log_frame(entry):
+    """Журнал каждого кадра (что прочитала камера, что решил сервер) - уходит в бэкап вместе с кадрами."""
+    with UPLOAD_LOCK:
+        UPLOAD["log"].append(json.dumps(entry, ensure_ascii=False))
+        del UPLOAD["log"][:-20000]
+
+
+def _gh_put(path, raw):
+    import base64
+    import urllib.request
+    body = json.dumps({"message": "кадры " + path, "content": base64.b64encode(raw).decode("ascii")}).encode("utf-8")
+    req = urllib.request.Request(f"https://api.github.com/repos/{GH_REPO}/contents/{path}", data=body, method="PUT",
+                                 headers={"Authorization": "Bearer " + GH_TOKEN, "Accept": "application/vnd.github+json",
+                                          "User-Agent": "volley-score", "Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=60) as r:
+        return r.status
+
+
+def upload_frames():
+    """Отправляет накопленные кадры и журнал в GitHub одним архивом. При ошибке всё остаётся в очереди."""
+    if not GH_TOKEN:
+        UPLOAD["err"] = "нет ключа GH_TOKEN в настройках Render"
+        return False
+    with UPLOAD_LOCK:
+        if UPLOAD["busy"]:
+            return False
+        UPLOAD["busy"] = True
+        files, log = UPLOAD["files"][:UPLOAD_MAX_FILES], UPLOAD["log"][:]
+        UPLOAD["files"], UPLOAD["log"] = UPLOAD["files"][len(files):], []
+    ok = False
+    try:
+        if not files and not log:
+            ok = True
+            return True
+        buf = io.BytesIO()
+        n = 0
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as z:            # JPEG уже сжат
+            for name in files:
+                p = os.path.join(FRAMES_DIR, name)
+                if os.path.exists(p):
+                    z.write(p, name)
+                    n += 1
+            z.writestr("log.jsonl", "\n".join(log) + ("\n" if log else ""))
+            z.writestr("score.json", json.dumps({"build": BUILD, "boot": BOOT, "score": payload()}, ensure_ascii=False))
+        now = time.gmtime()
+        path = time.strftime("%Y-%m-%d/%H%M%S", now) + f"_{BOOT[:4]}_{n}.zip"
+        _gh_put(path, buf.getvalue())
+        UPLOAD["ok"], UPLOAD["err"] = time.time(), None
+        UPLOAD["sent"] += n
+        ok = True
+        return True
+    except Exception as e:                                          # сеть, ключ, лимит: попробуем в следующий раз
+        UPLOAD["err"] = f"{type(e).__name__}: {e}"[:300]
+        with UPLOAD_LOCK:
+            UPLOAD["files"][:0] = files
+            UPLOAD["log"][:0] = log
+        return False
+    finally:
+        UPLOAD["busy"] = False
+        if ok and UPLOAD["files"]:                                  # после долгого перерыва очередь большая: дальше частями
+            threading.Thread(target=upload_frames, daemon=True).start()
+
+
+def _uploader():
+    while True:
+        time.sleep(UPLOAD_EVERY)
+        try:
+            upload_frames()
+        except Exception:
             pass
 
 
@@ -631,7 +720,15 @@ def process_frame(data, swap, mode="crop", cid="anon", air=False):
                 else:
                     MATCH["mirror_since"] = None
         took = int((time.time() - t0) * 1000)
-        save_frame(data, mode, reading, took, cid, not main)
+        fname = save_frame(data, mode, reading, took, cid, not main)
+        sc = STATE.snapshot()
+        log_frame({"t": round(time.time(), 2), "cid": cid[:4], "mode": mode, "main": main, "cached": res.get("cached", False),
+                   "kind": reading.get("mode"), "read": [reading["left"]["points"], reading["right"]["points"]],
+                   "read_sets": [reading["left"]["sets"], reading["right"]["sets"]], "readable": readable,
+                   "swap": swap, "score": [sc["us"]["points"], sc["them"]["points"]],
+                   "sets": [sc["us"]["sets"], sc["them"]["sets"]], "pit": bool(MATCH["pit"]),
+                   "source": AIR["source"], "status": sc.get("status"), "took_ms": took, "file": fname,
+                   "bbox": res.get("bbox")})
         res.update(lost=not readable, reading=reading, seen=_seen(reading, swap) if readable else None,
                    score=payload(), took_ms=took)
         return res
@@ -675,6 +772,12 @@ class Handler(BaseHTTPRequestHandler):
             self._file("index.html", "text/html; charset=utf-8")
         elif path == "/version":
             self._send(200, {"build": BUILD})
+        elif path == "/frames/status":                                    # работает ли бэкап кадров в GitHub
+            ok = UPLOAD["ok"]
+            self._send(200, {"backup": bool(GH_TOKEN), "repo": GH_REPO, "waiting": len(UPLOAD["files"]),
+                             "log_lines": len(UPLOAD["log"]), "sent_frames": UPLOAD["sent"],
+                             "last_ok": time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(ok)) if ok else None,
+                             "error": UPLOAD["err"]})
         elif path == "/backup":
             self._send(200, backup())
         elif path == "/control":
@@ -872,4 +975,19 @@ class Handler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "8000"))
     print(f"Сервер счёта запущен на порту {port}")
+    threading.Thread(target=_uploader, daemon=True).start()
+
+    def _on_stop(signum, frame):                                    # хостинг выключает сервер (сон, обновление):
+        try:                                                        # сначала отправляем кадры, потом выходим
+            until = time.time() + 20                                # хостинг ждёт около 30 с
+            while time.time() < until and (UPLOAD["files"] or UPLOAD["log"] or UPLOAD["busy"]):
+                if not upload_frames():
+                    time.sleep(1)
+                    if not GH_TOKEN:
+                        break
+        finally:
+            os._exit(0)
+
+    import signal
+    signal.signal(signal.SIGTERM, _on_stop)
     ThreadingHTTPServer(("0.0.0.0", port), Handler).serve_forever()
