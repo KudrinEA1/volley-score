@@ -62,7 +62,7 @@ FRAMES_DIR = os.path.join(DATA, "frames")
 os.makedirs(FRAMES_DIR, exist_ok=True)
 MAX_FRAMES = 400
 MAX_LOST_CROPS = 100                   # нечитаемые кадры-вырезки: не больше стольких, чтобы они не вытесняли всё остальное
-BUILD = 15                       # номер сборки: страница сверяет его со своим
+BUILD = 16                     # номер сборки: страница сверяет его со своим
 FLOG = {"pts": None, "saved": 0.0}
 
 # Эфир. Счёт на плашке меняет только ГЛАВНАЯ камера: страница, на которой последней нажали «В эфир».
@@ -86,7 +86,9 @@ BOOT = os.urandom(6).hex()                             # метка запуск
 RESTORE = {"fresh": not os.path.exists(os.path.join(DATA, "state.json")),   # пустой запуск: копию можно принять
            "saved": 0.0, "at": 0.0}
 RESTORED_SHOW_SEC = 120
-SETTINGS = {"serve": bool(_a.get("serve", True))}       # настройки с телефона B: показывать ли точку подачи
+# настройки с телефона B: показывать ли точку подачи; есть ли на табло счёт партий (если нет - камера партии не читает,
+# партии считает сервер сам: 25 очков с разницей 2, затем табло сброшено в 0:0)
+SETTINGS = {"serve": bool(_a.get("serve", True)), "board_sets": bool(_a.get("board_sets", False))}
 STATS = MatchStats(path=os.path.join(DATA, "stats.json"))
 SHOW = {"until": 0.0}                    # «Статистика в эфир»: до какого времени показывать таблицу на плашке
 SHOW_SEC = 60
@@ -113,6 +115,11 @@ try:
 except (OSError, ValueError):
     pass
 STATE.strict = MATCH["active"]
+if not SETTINGS["board_sets"]:
+    STATE.sets_ready = False                # партий на табло нет: сервер считает их сам
+AUTOPIT_EXIT_SEC = 10                    # автопитстоп снимается сам, если камера столько секунд видит один и тот же правдоподобный счёт
+AUTOPIT_EXIT_FRAMES = 3
+HEALED_SHOW_SEC = 120
 
 
 def save_match():
@@ -202,6 +209,33 @@ def pit_done():
     save_match()
 
 
+def pit_heal(sn):
+    """Автопитстоп снимается сам: камера AUTOPIT_EXIT_SEC секунд подряд видит один и тот же правдоподобный счёт
+    (не меньше, чем был при входе в питстоп). Если в питстопе правили черновик вручную - ждём «Готово» от человека."""
+    p = MATCH["pit"]
+    if not p or not p.get("auto") or p.get("touched"):
+        return
+    now = time.time()
+    b = p["before"]["points"]
+    c = [sn["us"], sn["them"]] if sn else None
+    if not c or None in c or c[0] < b[0] or c[1] < b[1] or not valid_points(c[0], c[1], STATE._target()):
+        p.pop("heal", None)                       # ничего понятного не видно: ждём дальше
+        return
+    h = p.get("heal")
+    if not h or h["score"] != c:
+        p["heal"] = {"score": c, "since": now, "n": 1}
+        return
+    h["n"] += 1
+    if now - h["since"] < AUTOPIT_EXIT_SEC or h["n"] < AUTOPIT_EXIT_FRAMES:
+        return
+    us_s, th_s = p["before"]["sets"]
+    STATE.set_team_values(c[0], c[1], us_s, th_s)
+    MATCH.update(pit=None, grace=now + PIT_GRACE_SEC, prev=list(c), healed={"at": now, "score": c})
+    STATS.observe(tuple(c), STATE._target(), immediate=True)    # очки, пропущенные в питстопе, - «порядок неизвестен»
+    SERVE.update(prev=tuple(c), who=None, hist=[])
+    save_match()
+
+
 def pit_cancel():
     MATCH.update(pit=None, grace=time.time() + PIT_GRACE_SEC)
     STATE.last_ok = time.time()
@@ -260,7 +294,8 @@ def side_answer(us_left):
 def save_air():
     try:
         with open(AIR_PATH, "w", encoding="utf-8") as f:
-            json.dump({"source": AIR["source"], "serve": SETTINGS["serve"], "cid": AIR["cid"]}, f)
+            json.dump({"source": AIR["source"], "serve": SETTINGS["serve"], "board_sets": SETTINGS["board_sets"],
+                       "cid": AIR["cid"]}, f)
     except OSError:
         pass
 
@@ -282,7 +317,8 @@ def backup():
             pass
     return {"boot": BOOT, "build": BUILD, "saved": time.time(), "fresh": RESTORE["fresh"],
             "restored": bool(RESTORE["at"]), "state": state, "stats": STATS.dump(),
-            "match": dict(MATCH), "air": {"source": AIR["source"], "serve": SETTINGS["serve"], "cid": AIR["cid"]},
+            "match": dict(MATCH), "air": {"source": AIR["source"], "serve": SETTINGS["serve"],
+                                          "board_sets": SETTINGS["board_sets"], "cid": AIR["cid"]},
             "matches": matches}
 
 
@@ -320,6 +356,10 @@ def restore(b):
         AIR["source"] = a["source"]
     if "serve" in a:
         SETTINGS["serve"] = bool(a["serve"])
+    if "board_sets" in a:
+        SETTINGS["board_sets"] = bool(a["board_sets"])
+    if not SETTINGS["board_sets"]:
+        STATE.sets_ready = False
     if a.get("cid") and not AIR["cid"]:
         AIR["cid"], AIR["last"] = str(a["cid"])[:12], now
     save_air()
@@ -392,10 +432,15 @@ def payload():
     s["camera_seen"] = dict(AIR["seen"], age=round(now - st, 1)) if st and AIR["cid"] else None
     s["match"] = {"active": MATCH["active"], "started": MATCH["started"], "set": s["us"]["sets"] + s["them"]["sets"] + 1,
                   "prompt": MATCH["prompt"], "warn": None,
-                  "pit": ({"auto": pit["auto"], "since": pit["since"], "draft": pit["draft"], "before": pit.get("before")} if pit else None)}
+                  "pit": ({"auto": pit["auto"], "since": pit["since"], "draft": pit["draft"], "before": pit.get("before"),
+                           "touched": bool(pit.get("touched"))} if pit else None)}
     ms = MATCH.get("mirror_since")
     if MATCH["active"] and ms and now - ms > MIRROR_SEC:
         s["match"]["warn"] = "Похоже, стороны перепутаны: камера видит зеркальный счёт. Проверьте «Наши слева / справа»."
+    elif MATCH.get("healed") and now - MATCH["healed"]["at"] < HEALED_SHOW_SEC:
+        hs = MATCH["healed"]["score"]
+        s["match"]["warn"] = (f"Питстоп снят сам: камера снова видит счёт {hs[0]}:{hs[1]}. "
+                              "Пропущенные очки в статистике - полупрозрачные (порядок неизвестен).")
     elif RESTORE["at"] and now - RESTORE["at"] < RESTORED_SHOW_SEC:
         s["match"]["warn"] = ("Сервер перезапускался. Счёт восстановлен с телефона в "
                               + time.strftime("%H:%M", time.localtime(RESTORE["at"])) + " — проверьте его.")
@@ -570,10 +615,14 @@ def process_frame(data, swap, mode="crop", cid="anon", air=False):
                 last["gray"], last["reading"] = small, reading
             readable = _readable(reading)
             res.update(cached=unchanged)
+        if not SETTINGS["board_sets"] and reading.get("mode"):       # партий на табло нет: то, что похоже на них, не читаем
+            reading = dict(reading, left=dict(reading["left"], sets=None), right=dict(reading["right"], sets=None))
         if main:
             AIR["last"] = time.time()
             if AIR["source"] == "camera" and not MATCH["pit"]:
                 STATE.update(reading if readable or mode == "crop" else None)
+            elif AIR["source"] == "camera" and MATCH["pit"] and MATCH["pit"].get("auto"):
+                pit_heal(_seen(reading, swap) if readable else None)
             sn = _seen(reading, swap) if readable else None       # камера видит зеркальный счёт: стороны перепутаны?
             if sn:
                 AIR["seen"], AIR["seen_t"] = sn, time.time()
@@ -791,6 +840,7 @@ class Handler(BaseHTTPRequestHandler):
                     seq = [[int(t), int(q)] for t, q in j.get("seq", []) if int(t) in (0, 1)][:120]
                     sets = [max(0, min(STATE.sets_to_win, int(x))) for x in j.get("sets", MATCH["pit"]["draft"]["sets"])][:2]
                     MATCH["pit"]["draft"] = {"seq": seq, "sets": sets}
+                    MATCH["pit"]["touched"] = True          # человек правит счёт: сам питстоп уже не снимется
                     save_match()
                 self._send(200, {"ok": True, "score": payload()})
             elif u.path == "/pit/done":
@@ -803,6 +853,12 @@ class Handler(BaseHTTPRequestHandler):
                 j = json.loads(data)
                 if "serve" in j:
                     SETTINGS["serve"] = bool(j["serve"])
+                if "board_sets" in j:
+                    SETTINGS["board_sets"] = bool(j["board_sets"])
+                    with STATE.lock:
+                        STATE.sets_ready = False             # при «есть» табло подтвердит партии заново, при «нет» сервер считает сам
+                        STATE._sc, STATE._sn = None, 0
+                        STATE.save()
                 save_air()
                 self._send(200, {"ok": True, "score": payload()})
             elif u.path == "/names":

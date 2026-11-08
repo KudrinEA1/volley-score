@@ -248,6 +248,14 @@
       </div>
     </div>
     <div class="grp">
+      <div class="lab">На табло есть счёт партий</div>
+      <div class="grid2" role="group" aria-label="Счёт партий на табло">
+        <button id="bsetsOn" aria-pressed="false">Есть</button>
+        <button id="bsetsOff" aria-pressed="true">Нет</button>
+      </div>
+      <p class="hint" style="margin-top:8px">«Нет»: камера партии не читает, сервер засчитывает партию сам (25 очков с разницей 2, потом табло сброшено в 0:0).</p>
+    </div>
+    <div class="grp">
       <div class="lab">Статистика</div>
       <button id="closeSet" style="width:100%">Закрыть партию вручную</button>
       <p class="hint" style="margin-top:8px">Нужно, только если партия закончилась, а статистика этого не заметила. <a href="/stats" target="_blank">Открыть статистику матча</a></p>
@@ -255,7 +263,7 @@
   </details>
 
   <button id="matchEnd" class="danger" style="width:100%">Завершить матч</button>
-  <div id="build">Сборка 15</div>
+  <div id="build">Сборка 16</div>
   <canvas id="crop" width="2" height="2"></canvas>
 </section>
 
@@ -269,7 +277,7 @@
   </div>
 </div>
 <script>
-const BUILD = 15;
+const BUILD = 16;
 const CONTROL = location.pathname.replace(/\/+$/, '') === '/control';    // пульт: та же страница без камеры
 const $ = id => document.getElementById(id);
 const video = $('v'), stage = $('stage'), box = $('box'), crop = $('crop');
@@ -330,6 +338,8 @@ function applyScore(sc) {
   if (sc.settings) {
     $('serveOn').setAttribute('aria-pressed', String(!!sc.settings.serve));
     $('serveOff').setAttribute('aria-pressed', String(!sc.settings.serve));
+    $('bsetsOn').setAttribute('aria-pressed', String(!!sc.settings.board_sets));
+    $('bsetsOff').setAttribute('aria-pressed', String(!sc.settings.board_sets));
   }
   if (sc.air) { source = sc.air.source; document.body.classList.toggle('manualmode', source === 'manual'); showSource(); }
   checkBuild(sc.build);
@@ -351,7 +361,9 @@ function applyMatch(sc) {
   $('pit').hidden = !m.pit;
   $('pitBtn').disabled = !!m.pit;
   if (m.pit) {
-    $('pitWhy').textContent = m.pit.auto ? 'Включился сам: камера больше 30 с не видит логичного счёта.' : '';
+    $('pitWhy').textContent = m.pit.auto ? (m.pit.touched
+      ? 'Включился сам: камера больше 30 с не видела логичного счёта. Вы правите счёт — нажмите «Готово», когда закончите.'
+      : 'Включился сам: камера больше 30 с не видела логичного счёта. Снимется сам, когда камера 10 с подряд увидит понятный счёт.') : '';
     if (Date.now() - draftEdited > 2000) { draft = JSON.parse(JSON.stringify(m.pit.draft)); syncRows(); }   // чужие правки (с другого телефона) подхватываем
     $('pnU').textContent = sc.us.name; $('pnT').textContent = sc.them.name;
     renderPit();
@@ -528,6 +540,8 @@ $('closeSet').onclick = () => { if (confirm('Закрыть текущую па�
 $('statsBtn').onclick = () => post('/showstats', { on: !(score && score.show_stats) });
 $('serveOn').onclick = () => post('/settings', { serve: true });
 $('serveOff').onclick = () => post('/settings', { serve: false });
+$('bsetsOn').onclick = () => post('/settings', { board_sets: true });
+$('bsetsOff').onclick = () => post('/settings', { board_sets: false });
 $('saveNames').onclick = () => post('/names', { us: $('inUs').value.trim(), them: $('inThem').value.trim() });
 
 function showSource() {

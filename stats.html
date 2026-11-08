@@ -66,7 +66,7 @@ async function tick() {
       (r.nodata ? '' : '<span class="meta">' + r.minutes + ' мин' + (r.partial ? ' · неполная запись' : '') + '</span>') +
       (r.nodata ? '<span class="meta">нет данных</span>' : r.done ? '' : '<span class="live">идёт</span>') + '</h2>' + (r.nodata ? '' : '<div class="sr">' + finCol(r.final, r.done) + rows(r.seq) + '</div>') + '</div>').join('');
     $('lg').innerHTML = '<b style="background:var(--us)"></b>' + d.names.us + '<b style="background:var(--them)"></b>' + d.names.them +
-      ' · полупрозрачные кружки: порядок очков неизвестен (счёт перелистнули сразу на несколько очков)';
+      ' · полупрозрачные кружки: очко было, но когда именно — неизвестно (камера пропустила момент: табло загородили, перелистнули сразу несколько очков или счёт выставили в питстопе)';
   } catch (e) { /* связи нет */ }
 }
 tick(); setInterval(tick, 3000);
