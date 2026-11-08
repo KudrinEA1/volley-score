@@ -468,6 +468,94 @@ def _read_mono(bgr):
     return {"mode": "mono", "left": {"points": lp, "sets": None}, "right": {"points": rp, "sets": None}}
 
 
+# ====================== табло из белых карточек с тёмными или цветными цифрами (синее перекидное) ======================
+# слева большая карточка (очки левых, например зелёные), справа большая (очки правых, чёрные), между ними маленькие
+# карточки партий (красные). Партии отсюда не читаются.
+def _white_mask(bgr, hsv=None):
+    hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV) if hsv is None else hsv
+    m = ((hsv[:, :, 1] < 70) & (hsv[:, :, 2] > 150)).astype(np.uint8) * 255
+    return cv2.morphologyEx(m, cv2.MORPH_CLOSE, np.ones((9, 9), np.uint8))
+
+
+def _white_boards(bgr, hsv=None):
+    """Белые пятна табло (карточки стоят вплотную и сливаются): [(рамка x0, y0, x1, y1, залитый контур)], крупные первыми."""
+    H, W = bgr.shape[:2]
+    m = _white_mask(bgr, hsv)
+    cnts, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    out = []
+    for c in sorted(cnts, key=cv2.contourArea, reverse=True)[:3]:
+        x, y, w, h = cv2.boundingRect(c)
+        if w * h < 0.01 * W * H or w < 1.2 * h or cv2.contourArea(c) < 0.4 * w * h:
+            continue
+        fill = np.zeros((H, W), np.uint8)
+        cv2.drawContours(fill, [c], -1, 255, -1)
+        out.append(((x, y, x + w, y + h), fill))
+    return out
+
+
+def _board_groups(bgr, hsv, box, fill):
+    """Цифры внутри белого табло -> группы (числа) слева направо: [(x0, y0, x1, y1, маска)] только самые высокие (очки)."""
+    x0, y0, x1, y1 = box
+    g = cv2.cvtColor(bgr[y0:y1, x0:x1], cv2.COLOR_BGR2GRAY)
+    s = hsv[y0:y1, x0:x1, 1]
+    inside = fill[y0:y1, x0:x1] > 0
+    paper = float(np.percentile(g[inside], 70)) if inside.any() else 200.0
+    ink = ((((g < paper - 70) | (s > 90)) & inside).astype(np.uint8)) * 255       # тёмное или цветное на белом
+    ink = cv2.morphologyEx(ink, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+    n, lab, st, _ = cv2.connectedComponentsWithStats(ink)
+    hh = y1 - y0
+    comps = []
+    for i in range(1, n):
+        x, y, w, h, area = [int(v) for v in st[i]]
+        if h < 0.2 * hh or w < 0.12 * h or w > 1.2 * h or area < 60:
+            continue                                                # мелочь, тени между карточками, полосы
+        if area / h < 0.07 * h:
+            continue                                                # тонкая линия (край карточки, тень), даже наклонная
+        if y <= 1 and y + h >= hh - 1:
+            continue
+        comps.append([x, y, x + w, y + h, i])
+    if not comps:
+        return []
+    hmax = max(c[3] - c[1] for c in comps)
+    tall = sorted(c for c in comps if c[3] - c[1] >= 0.75 * hmax)    # очки - самые крупные цифры; партии мельче
+    groups = []
+    for c in tall:
+        if groups and c[0] - groups[-1][2] <= 0.35 * (c[3] - c[1]):
+            gr = groups[-1]
+            gr[:4] = [min(gr[0], c[0]), min(gr[1], c[1]), max(gr[2], c[2]), max(gr[3], c[3])]
+            gr[4].append(c[4])
+        else:
+            groups.append([c[0], c[1], c[2], c[3], [c[4]]])
+    out = []
+    for gx0, gy0, gx1, gy1, ids in groups:
+        m = np.isin(lab[gy0:gy1, gx0:gx1], ids).astype(np.uint8) * 255
+        out.append((gx0, gy0, gx1, gy1, m))
+    return out
+
+
+def _read_cards(bgr, hsv):
+    for box, fill in _white_boards(bgr, hsv):
+        groups = _board_groups(bgr, hsv, box, fill)
+        if len(groups) < 2:
+            continue
+        vals = []
+        for gr in (groups[0], groups[-1]):
+            crop = _crop_digits(gr[4])
+            vals.append([] if crop is None else _ocr_options(crop, 2))
+        lp, rp = _pick_points(vals[0], vals[1])
+        return {"mode": "cards", "left": {"points": lp, "sets": None}, "right": {"points": rp, "sets": None}}
+    return None
+
+
+def _cards_candidates(img, hsv):
+    h_img, w_img = img.shape[:2]
+    out = []
+    for (x0, y0, x1, y1), _ in _white_boards(img, hsv)[:1]:
+        mx, my = int(0.06 * (x1 - x0)), int(0.15 * (y1 - y0))
+        out.append((max(0, x0 - mx), max(0, y0 - my), min(w_img, x1 + mx), min(h_img, y1 + my)))
+    return out
+
+
 def read_board(bgr):
     if not _BUDGET["outer"]:
         _BUDGET["until"] = time.time() + READ_BUDGET
@@ -504,6 +592,10 @@ def read_board(bgr):
         first = first or r
 
     r = _read_mono(bgr)
+    if ok(r):
+        return r
+    first = first or r
+    r = _read_cards(bgr, hsv)
     if ok(r):
         return r
     return first or r or empty
@@ -598,7 +690,8 @@ def find_board(bgr):
     img = cv2.resize(bgr, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA) if scale < 1 else bgr
     h, w = img.shape[:2]
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-    candidates = _yellow_candidates(img, hsv)[:MAX_TRIES] + _color_candidates(img, hsv)[:1] + _mono_candidates(img)[:MAX_TRIES]
+    candidates = (_yellow_candidates(img, hsv)[:MAX_TRIES] + _color_candidates(img, hsv)[:1] + _mono_candidates(img)[:MAX_TRIES]
+                  + _cards_candidates(img, hsv))
     _BUDGET["until"], _BUDGET["outer"] = time.time() + SEARCH_BUDGET, True       # общее время на весь поиск
     try:
         for x0, y0, x1, y1 in candidates:
