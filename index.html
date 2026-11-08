@@ -44,7 +44,8 @@
   button:focus-visible, input:focus-visible { outline:3px solid var(--mark); outline-offset:2px; }
   #airBtn { width:100%; background:var(--ok); color:#07170f; border-color:var(--ok); font-size:19px; min-height:58px; }
   #airBtn.on { background:var(--bad); border-color:var(--bad); color:#220806; }
-  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+  .grid2 { display:grid; grid-template-columns:minmax(0, 1fr) minmax(0, 1fr); gap:8px; }   /* minmax(0,…): длинная подпись переносится, а не выталкивает кнопку за край */
+  .grid2 > button { overflow-wrap:break-word; hyphens:auto; }
   .lab { font-size:13px; color:var(--muted); margin:0 2px 6px; }
   #status { font-size:14px; min-height:20px; margin:0 2px; }
   #status.ok { color:var(--ok); } #status.bad { color:var(--bad); }
@@ -70,7 +71,9 @@
   /* порядок блоков: при ручном счёте кнопки поднимаются сразу под переключатель */
   #tag.pit { background:var(--warn); border-color:var(--warn); color:#241700; }
   #matchGrp { background:var(--panel); border:2px solid var(--line); border-radius:12px; padding:10px; }
-  #matchGrp .row3 { display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; }
+  /* «Конец партии» - редкая кнопка: маленькая, серая, отдельно от основных, чтобы не попасть случайно */
+  #setEnd { display:block; margin:14px 0 0 auto; min-height:36px; padding:6px 14px; font-size:13px; font-weight:500;
+            color:var(--muted); background:transparent; border:1px dashed var(--line); border-radius:10px; }
   #matchInfo { font-size:14px; color:var(--muted); margin-bottom:8px; }
   #pitBtn { background:var(--warn); border-color:var(--warn); color:#241700; }
   #warn { background:rgba(255,107,94,.15); border:2px solid var(--bad); color:var(--bad); border-radius:12px; padding:10px; font-weight:600; }
@@ -116,12 +119,14 @@
   /* ---------- горизонтально: камера слева на всю высоту, справа счёт и кнопки ---------- */
   @media (orientation: landscape) and (min-width: 560px) {
     body { padding: 0; overflow: hidden; }
-    #app { max-width:none; height:100dvh; display:grid; grid-template-columns: 60% 40%; grid-template-rows: auto 1fr;
+    #app { max-width:none; height:100dvh; display:grid; grid-template-columns: minmax(0, 1fr) minmax(330px, 42%); grid-template-rows: auto 1fr;
            grid-template-areas: "cam bar" "cam ctl"; padding-left: env(safe-area-inset-left); padding-right: env(safe-area-inset-right); }
     #camcol { grid-area: cam; margin:0; padding: max(8px, env(safe-area-inset-top)) 8px max(8px, env(safe-area-inset-bottom)); display:flex; flex-direction:column; justify-content:center; min-height:0; }
     #stage { width:min(100%, calc((100dvh - 80px) * var(--ar))); }
     #bar { grid-area: bar; position: static; padding: max(6px, env(safe-area-inset-top)) 10px 6px; }
     .pts { font-size:28px; } .colon { font-size:22px; }
+    #bar .barrow { gap:6px; } #tag { padding:3px 6px; }
+    button { font-size:15px; }
     #ctl { grid-area: ctl; margin:0; padding: 8px 10px max(12px, env(safe-area-inset-bottom)); overflow-y:auto; -webkit-overflow-scrolling: touch; min-height:0; }
     .hint.long { display:none; }
   }
@@ -178,10 +183,12 @@
   <div id="matchGrp">
     <div id="matchInfo">Матч не начат</div>
     <div id="matchIdle"><button id="matchStart" style="width:100%">Начать матч</button></div>
-    <div id="matchOn" class="row3" hidden>
-      <button id="pitBtn">Питстоп</button>
-      <button id="setEnd">Конец партии</button>
-      <button id="statsBtn">Статистика в эфир</button>
+    <div id="matchOn" hidden>
+      <div class="grid2">
+        <button id="pitBtn">Питстоп</button>
+        <button id="statsBtn">Статистика в эфир</button>
+      </div>
+      <button id="setEnd">Конец партии…</button>
     </div>
   </div>
 
@@ -263,7 +270,7 @@
   </details>
 
   <button id="matchEnd" class="danger" style="width:100%">Завершить матч</button>
-  <div id="build">Сборка 16</div>
+  <div id="build">Сборка 17</div>
   <canvas id="crop" width="2" height="2"></canvas>
 </section>
 
@@ -277,7 +284,7 @@
   </div>
 </div>
 <script>
-const BUILD = 16;
+const BUILD = 17;
 const CONTROL = location.pathname.replace(/\/+$/, '') === '/control';    // пульт: та же страница без камеры
 const $ = id => document.getElementById(id);
 const video = $('v'), stage = $('stage'), box = $('box'), crop = $('crop');
