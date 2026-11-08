@@ -569,6 +569,10 @@ def read_board(bgr):
         return bool(r) and r["left"]["points"] is not None and r["right"]["points"] is not None
 
     first = None                                                    # первый вид, который хотя бы опознан (для отчёта, если ничего не прочиталось)
+    r = _read_cards(bgr, hsv)                                       # белое табло с карточками: быстрый путь первым
+    if ok(r):
+        return r
+    first = r
     yellow = _yellow_mask(bgr, hsv)
     if yellow.mean() / 255 > 0.008:
         points, sets = _read_yellow(hsv, yellow, bgr)
@@ -592,10 +596,6 @@ def read_board(bgr):
         first = first or r
 
     r = _read_mono(bgr)
-    if ok(r):
-        return r
-    first = first or r
-    r = _read_cards(bgr, hsv)
     if ok(r):
         return r
     return first or r or empty
@@ -690,8 +690,8 @@ def find_board(bgr):
     img = cv2.resize(bgr, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA) if scale < 1 else bgr
     h, w = img.shape[:2]
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-    candidates = (_yellow_candidates(img, hsv)[:MAX_TRIES] + _color_candidates(img, hsv)[:1] + _mono_candidates(img)[:MAX_TRIES]
-                  + _cards_candidates(img, hsv))
+    candidates = (_cards_candidates(img, hsv) + _yellow_candidates(img, hsv)[:MAX_TRIES] + _color_candidates(img, hsv)[:1]
+                  + _mono_candidates(img)[:MAX_TRIES])
     _BUDGET["until"], _BUDGET["outer"] = time.time() + SEARCH_BUDGET, True       # общее время на весь поиск
     try:
         for x0, y0, x1, y1 in candidates:
