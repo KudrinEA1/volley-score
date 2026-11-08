@@ -1,9 +1,9 @@
 # Сервер счёта для хостинга (Render и любой другой хостинг с Docker). Порт хостинг задаёт переменной PORT.
 FROM python:3.11-slim
 
-# Tesseract - запасной путь распознавания цифр; libglib нужен OpenCV
+# Tesseract - запасной путь распознавания цифр; libglib нужен OpenCV; git и ssh - бэкап кадров в GitHub
 RUN apt-get update \
- && apt-get install -y --no-install-recommends tesseract-ocr libglib2.0-0 \
+ && apt-get install -y --no-install-recommends tesseract-ocr libglib2.0-0 git openssh-client \
  && rm -rf /var/lib/apt/lists/*
 
 # сервер работает не от администратора

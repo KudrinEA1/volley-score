@@ -62,7 +62,7 @@ FRAMES_DIR = os.path.join(DATA, "frames")
 os.makedirs(FRAMES_DIR, exist_ok=True)
 MAX_FRAMES = 1500
 MAX_LOST_CROPS = 600                   # нечитаемые кадры-вырезки: не больше стольких, чтобы они не вытесняли всё остальное
-BUILD = 21             # номер сборки: страница сверяет его со своим
+BUILD = 22            # номер сборки: страница сверяет его со своим
 FLOG = {"pts": None, "saved": 0.0}
 SAMPLE_SEC = 5                         # кроме изменений, кадр сохраняется раз в столько секунд (для разбора игры)
 
@@ -566,10 +566,137 @@ def _gh_put(path, raw):
         return r.status
 
 
+# ---------- свой ключ сервера для записи в GitHub (deploy key), без ручного ввода ключей ----------
+# Сервер сам создаёт пару ключей SSH. Закрытый ключ шифруется секретом FRAMES_KEY (он есть только в настройках Render)
+# и в зашифрованном виде лежит в коде (frames_key.enc): после перезапуска сервер его расшифровывает. Открытый ключ
+# добавлен в репозиторий volley-frames как deploy key с правом записи - доступ только к этому репозиторию.
+KEY_ENC_PATH = os.path.join(BASE, "frames_key.enc")
+KEY_DIR = os.path.join(DATA, "ghkey")
+GIT_REPO_DIR = os.path.join(DATA, "ghrepo")
+KEY = {"ready": False, "pub": None, "enc": None, "from_file": False, "err": None, "priv": None}
+GIT_LOCK = threading.Lock()
+
+
+def _keystream(k, nonce, n):
+    import hashlib
+    out, i = bytearray(), 0
+    while len(out) < n:
+        out += hashlib.sha256(k + nonce + i.to_bytes(8, "big")).digest()
+        i += 1
+    return bytes(out[:n])
+
+
+def _seal(secret, data):
+    import base64
+    import hashlib
+    import hmac
+    k, m = hashlib.sha256(b"enc" + secret).digest(), hashlib.sha256(b"mac" + secret).digest()
+    nonce = os.urandom(16)
+    ct = bytes(a ^ b for a, b in zip(data, _keystream(k, nonce, len(data))))
+    return base64.b64encode(nonce + hmac.new(m, nonce + ct, "sha256").digest() + ct).decode("ascii")
+
+
+def _unseal(secret, text):
+    import base64
+    import hashlib
+    import hmac
+    raw = base64.b64decode(text.strip())
+    nonce, tag, ct = raw[:16], raw[16:48], raw[48:]
+    k, m = hashlib.sha256(b"enc" + secret).digest(), hashlib.sha256(b"mac" + secret).digest()
+    if not hmac.compare_digest(tag, hmac.new(m, nonce + ct, "sha256").digest()):
+        raise ValueError("ключ зашифрован другим FRAMES_KEY")
+    return bytes(a ^ b for a, b in zip(ct, _keystream(k, nonce, len(ct))))
+
+
+def _run(args, inp=None, env=None, timeout=60):
+    import subprocess
+    r = subprocess.run(args, input=inp, capture_output=True, timeout=timeout, env=env)
+    if r.returncode != 0:
+        raise RuntimeError(f"{os.path.basename(args[0])} {args[1] if len(args) > 1 else ''}: "
+                           + (r.stderr or r.stdout).decode("utf-8", "replace").strip()[-300:])
+    return r.stdout
+
+
+def key_init():
+    """Ключ сервера: расшифровать из frames_key.enc, а если его нет или не подходит - создать новый."""
+    os.makedirs(KEY_DIR, exist_ok=True)
+    priv = os.path.join(KEY_DIR, "id_ed25519")
+    secret = FRAMES_KEY.encode("utf-8")
+    try:
+        data = None
+        if os.path.exists(KEY_ENC_PATH):
+            try:
+                with open(KEY_ENC_PATH, encoding="utf-8") as f:
+                    data = _unseal(secret, f.read())
+                KEY["from_file"] = True
+            except Exception as e:
+                KEY["err"] = f"frames_key.enc: {e}"
+        for p in (priv, priv + ".pub"):
+            if os.path.exists(p):
+                os.remove(p)
+        if data is None:
+            _run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "volley-score-server", "-f", priv])
+            with open(priv, "rb") as f:
+                data = f.read()
+            KEY["from_file"] = False
+        else:
+            with open(priv, "wb") as f:
+                f.write(data)
+        os.chmod(priv, 0o600)
+        if os.name == "nt":                                         # проверка на Windows: ssh требует ключ только для себя
+            _run(["icacls", priv, "/inheritance:r", "/grant:r", os.environ.get("USERNAME", "") + ":F"])
+        KEY["pub"] = _run(["ssh-keygen", "-y", "-f", priv]).decode("ascii").strip()
+        KEY["enc"] = _seal(secret, data)
+        KEY["priv"] = priv
+        KEY["err"] = None
+        KEY["ready"] = True
+    except Exception as e:
+        KEY["err"] = f"{type(e).__name__}: {e}"[:300]
+
+
+def _git_push(path, raw):
+    """Один файл -> новый коммит в volley-frames через git по SSH (без рабочей копии: репозиторий растёт, а мы
+    скачиваем только последний коммит без содержимого файлов)."""
+    with GIT_LOCK:
+        kh = os.path.join(KEY_DIR, "known_hosts").replace("\\", "/")
+        env = dict(os.environ, GIT_SSH_COMMAND=f'ssh -i "{KEY["priv"].replace(chr(92), "/")}" -o IdentitiesOnly=yes '
+                                               f'-o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="{kh}"',
+                   GIT_AUTHOR_NAME="volley-score", GIT_AUTHOR_EMAIL="server@volley-score",
+                   GIT_COMMITTER_NAME="volley-score", GIT_COMMITTER_EMAIL="server@volley-score",
+                   GIT_INDEX_FILE=os.path.join(KEY_DIR, "index"), GIT_TERMINAL_PROMPT="0")
+        g = ["git", "-C", GIT_REPO_DIR]
+        if not os.path.exists(os.path.join(GIT_REPO_DIR, "HEAD")):
+            os.makedirs(GIT_REPO_DIR, exist_ok=True)
+            _run(["git", "init", "-q", "--bare", GIT_REPO_DIR], env=env)
+            _run(g + ["remote", "add", "origin", f"git@github.com:{GH_REPO}.git"], env=env)
+            _run(g + ["config", "remote.origin.promisor", "true"], env=env)
+            _run(g + ["config", "remote.origin.partialclonefilter", "blob:none"], env=env)
+        for attempt in range(2):
+            _run(g + ["fetch", "-q", "--depth", "1", "--filter=blob:none", "origin", "main"], env=env, timeout=120)
+            parent = _run(g + ["rev-parse", "FETCH_HEAD"], env=env).decode().strip()
+            _run(g + ["read-tree", "FETCH_HEAD"], env=env)
+            blob = _run(g + ["hash-object", "-w", "--stdin"], inp=raw, env=env).decode().strip()
+            _run(g + ["update-index", "--add", "--cacheinfo", f"100644,{blob},{path}"], env=env)
+            tree = _run(g + ["write-tree"], env=env).decode().strip()
+            commit = _run(g + ["commit-tree", tree, "-p", parent, "-m", "кадры " + path], env=env).decode().strip()
+            try:
+                _run(g + ["push", "-q", "origin", f"{commit}:refs/heads/main"], env=env, timeout=180)
+                return
+            except RuntimeError:
+                if attempt:
+                    raise                                           # кто-то записал одновременно: ещё раз поверх свежего
+
+
+def _push(path, raw):
+    if GH_TOKEN:
+        return _gh_put(path, raw)
+    return _git_push(path, raw)
+
+
 def upload_frames():
     """Отправляет накопленные кадры и журнал в GitHub одним архивом. При ошибке всё остаётся в очереди."""
-    if not GH_TOKEN:
-        UPLOAD["err"] = "нет ключа GH_TOKEN в настройках Render"
+    if not (GH_TOKEN or KEY["ready"]):
+        UPLOAD["err"] = KEY["err"] or "ключ сервера ещё не готов"
         return False
     with UPLOAD_LOCK:
         if UPLOAD["busy"]:
@@ -594,7 +721,7 @@ def upload_frames():
             z.writestr("score.json", json.dumps({"build": BUILD, "boot": BOOT, "score": payload()}, ensure_ascii=False))
         now = time.gmtime()
         path = time.strftime("%Y-%m-%d/%H%M%S", now) + f"_{BOOT[:4]}_{n}.zip"
-        _gh_put(path, buf.getvalue())
+        _push(path, buf.getvalue())
         UPLOAD["ok"], UPLOAD["err"] = time.time(), None
         UPLOAD["sent"] += n
         ok = True
@@ -774,10 +901,14 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, {"build": BUILD})
         elif path == "/frames/status":                                    # работает ли бэкап кадров в GitHub
             ok = UPLOAD["ok"]
-            self._send(200, {"backup": bool(GH_TOKEN), "repo": GH_REPO, "waiting": len(UPLOAD["files"]),
+            self._send(200, {"backup": bool(GH_TOKEN or KEY["ready"]), "repo": GH_REPO,
+                             "way": "token" if GH_TOKEN else ("server key" if KEY["ready"] else None),
+                             "key_saved_in_code": KEY["from_file"], "waiting": len(UPLOAD["files"]),
                              "log_lines": len(UPLOAD["log"]), "sent_frames": UPLOAD["sent"],
                              "last_ok": time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(ok)) if ok else None,
-                             "error": UPLOAD["err"]})
+                             "error": UPLOAD["err"] or KEY["err"]})
+        elif path == "/frames/key":                                       # открытый ключ и зашифрованный закрытый (без FRAMES_KEY не прочесть)
+            self._send(200, {"pub": KEY["pub"], "enc": KEY["enc"], "from_file": KEY["from_file"], "error": KEY["err"]})
         elif path == "/backup":
             self._send(200, backup())
         elif path == "/control":
@@ -975,6 +1106,7 @@ class Handler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "8000"))
     print(f"Сервер счёта запущен на порту {port}")
+    key_init()
     threading.Thread(target=_uploader, daemon=True).start()
 
     def _on_stop(signum, frame):                                    # хостинг выключает сервер (сон, обновление):
