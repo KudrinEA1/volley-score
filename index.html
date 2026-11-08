@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Камера табло</title>
 <style>
-  :root { --bg:#111315; --panel:#1c1f22; --line:#2c3136; --text:#eceef0; --muted:#8d949b; --mark:#ffd21f; --ok:#4cc38a; --bad:#ff6b5e; --warn:#ffb020; }
+  :root { --bg:#111315; --panel:#1c1f22; --line:#2c3136; --text:#eceef0; --muted:#8d949b; --mark:#ffd21f; --ok:#4cc38a; --bad:#ff6b5e; --warn:#5aa9ff; }   /* оранжевого в оформлении нет: «внимание» - голубой */
   * { box-sizing: border-box; }
   html, body, button { touch-action: manipulation; }      /* быстрые нажатия не увеличивают страницу */
   html, body { margin:0; background:var(--bg); color:var(--text); font:16px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
@@ -17,7 +17,7 @@
   .barrow { display:flex; align-items:center; gap:8px; }
   #tag { font-size:12px; font-weight:800; letter-spacing:.04em; padding:4px 8px; border-radius:8px; white-space:nowrap; border:2px solid var(--line); color:var(--muted); }
   #tag.air { background:var(--bad); border-color:var(--bad); color:#220806; }
-  #tag.manual { background:var(--warn); border-color:var(--warn); color:#241700; }
+  #tag.manual { background:var(--warn); border-color:var(--warn); color:#06182b; }
   .nm { flex:1; min-width:0; font-size:14px; color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .nm.r { text-align:right; }
   .pts { font-size:34px; font-weight:800; font-variant-numeric: tabular-nums; min-width:1.3em; text-align:center; border-radius:8px; transition: background .3s; }
@@ -69,14 +69,13 @@
   #settings a { color:var(--mark); }
 
   /* порядок блоков: при ручном счёте кнопки поднимаются сразу под переключатель */
-  #tag.pit { background:var(--warn); border-color:var(--warn); color:#241700; }
+  #tag.pit { background:var(--warn); border-color:var(--warn); color:#06182b; }
   #matchGrp { background:var(--panel); border:2px solid var(--line); border-radius:12px; padding:10px; }
-  /* «Конец партии» - редкая кнопка: маленькая, серая, отдельно от основных, чтобы не попасть случайно */
-  #setEnd { display:block; margin:14px 0 0 auto; min-height:36px; padding:6px 14px; font-size:13px; font-weight:500;
-            color:var(--muted); background:transparent; border:1px dashed var(--line); border-radius:10px; }
+  /* «Конец партии» - обычная кнопка внизу блока матча, с отступом от основных (и с подтверждением) */
+  #setEnd { display:block; width:100%; margin-top:16px; }
   #matchInfo { font-size:14px; color:var(--muted); margin-bottom:8px; }
-  #pitBtn { background:var(--warn); border-color:var(--warn); color:#241700; }
-  #warn { background:rgba(255,107,94,.15); border:2px solid var(--bad); color:var(--bad); border-radius:12px; padding:10px; font-weight:600; }
+  #pitBtn { background:var(--warn); border-color:var(--warn); color:#06182b; }
+  #warn { background:rgba(255,107,94,.12); border:1px solid var(--bad); color:var(--bad); border-radius:10px; padding:6px 10px; font-size:13px; font-weight:500; }
   /* питстоп */
   #pit { background:var(--panel); border:3px solid var(--warn); border-radius:12px; padding:10px; display:flex; flex-direction:column; gap:8px; }
   #pit h3 { margin:0; font-size:16px; color:var(--warn); }
@@ -90,7 +89,7 @@
   #rib .hd, #rib .r { display:grid; grid-template-columns: 34px 1fr 1fr; align-items:center; }
   #rib .hd { position:sticky; top:0; background:var(--panel); font-size:12px; color:var(--muted); padding:6px 4px; border-bottom:2px solid var(--line); z-index:1; }
   #rib .r { min-height:40px; border-bottom:1px solid var(--line); }
-  #rib .r.new { background:rgba(255,176,32,.07); }
+  #rib .r.new { background:rgba(90,169,255,.08); }
   #rib .n { font-size:11px; color:var(--muted); text-align:center; }
   #rib .cell { height:40px; display:flex; align-items:center; justify-content:center; cursor:pointer; }
   #rib .dot { width:30px; height:30px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-weight:800; font-size:13px; color:#1F2150; }
@@ -161,7 +160,7 @@
   <div id="warn" hidden></div>
 
   <div id="pit" hidden>
-    <h3>ПИТСТОП · счёт уточняется</h3>
+    <h3>УТОЧНИТЬ СЧЁТ · на плашке «Счёт уточняется»</h3>
     <div class="hint" id="pitWhy"></div>
     <div class="q4">
       <div class="lbl" id="pnU">Наши</div><div></div><div class="lbl" id="pnT">Соперник</div>
@@ -175,7 +174,7 @@
     <div class="hint">Лента розыгрышей: тап по стороне пустой строки - кто выиграл розыгрыш; тап по кружку - очистить строку. Полупрозрачные - порядок неизвестен, расставлять не обязательно. Тап по цифре счёта - ввести число.</div>
     <div id="rib"></div>
     <div class="grid2">
-      <button id="pitCancel">Отменить питстоп</button>
+      <button id="pitCancel">Отмена</button>
       <button id="pitDone" style="background:var(--ok);border-color:var(--ok);color:#07170f">Готово</button>
     </div>
   </div>
@@ -185,10 +184,10 @@
     <div id="matchIdle"><button id="matchStart" style="width:100%">Начать матч</button></div>
     <div id="matchOn" hidden>
       <div class="grid2">
-        <button id="pitBtn">Питстоп</button>
+        <button id="pitBtn">Уточнить счёт</button>
         <button id="statsBtn">Статистика в эфир</button>
       </div>
-      <button id="setEnd">Конец партии…</button>
+      <button id="setEnd">Конец партии</button>
     </div>
   </div>
 
@@ -270,7 +269,7 @@
   </details>
 
   <button id="matchEnd" class="danger" style="width:100%">Завершить матч</button>
-  <div id="build">Сборка 17</div>
+  <div id="build">Сборка 18</div>
   <canvas id="crop" width="2" height="2"></canvas>
 </section>
 
@@ -284,7 +283,7 @@
   </div>
 </div>
 <script>
-const BUILD = 17;
+const BUILD = 18;
 const CONTROL = location.pathname.replace(/\/+$/, '') === '/control';    // пульт: та же страница без камеры
 const $ = id => document.getElementById(id);
 const video = $('v'), stage = $('stage'), box = $('box'), crop = $('crop');
@@ -318,7 +317,7 @@ function renderBar() {
   }
   $('setsTxt').textContent = score.show_sets ? 'партии ' + v.L.sets + ':' + v.R.sets : '';
   const tag = $('tag');
-  if (score.pit) { tag.textContent = 'ПИТСТОП'; tag.className = 'pit'; }
+  if (score.pit) { tag.textContent = 'УТОЧНЯЕТСЯ'; tag.className = 'pit'; }
   else if (source === 'manual') { tag.textContent = '✋ ВРУЧНУЮ'; tag.className = 'manual'; }
   else if (onAir) { tag.textContent = '● В ЭФИРЕ'; tag.className = 'air'; }
   else { tag.textContent = 'ПРОВЕРКА'; tag.className = ''; }
@@ -395,7 +394,7 @@ $('matchEnd').onclick = () => { if (confirm('Завершить матч? Он �
 $('setEnd').onclick = () => { if (confirm('Закончить текущую партию? Партия уйдёт лидеру по очкам, счёт станет 0:0.')) post('/set_end'); };
 $('pitBtn').onclick = () => post('/pit/start');
 $('pitDone').onclick = async () => { await sendDraft(); post('/pit/done'); };
-$('pitCancel').onclick = () => { if (confirm('Отменить питстоп? Правки не сохранятся, счёт останется прежним.')) post('/pit/cancel'); };
+$('pitCancel').onclick = () => { if (confirm('Отменить уточнение счёта? Правки не сохранятся, счёт останется прежним.')) post('/pit/cancel'); };
 
 // Лента: rows = розыгрыши по порядку, null - пустая строка. Пустые строки до 45-го розыгрыша (и ещё 10 после последнего
 // заполненного) в счёт не идут. На сервер уходит seq - только заполненные строки.
@@ -511,7 +510,7 @@ async function maybeRestore(sc) {
   restoreTried = sc.boot;
   try {
     const j = await post('/restore', b);
-    if (j.ok) setStatus('Сервер перезапускался — счёт восстановлен с этого телефона. Проверьте его.', 'ok');
+    if (j.ok) setStatus('Счёт восстановлен после перезапуска сервера.', 'ok');
   } catch (e) { restoreTried = ''; }                      // не дошло - попробуем при следующем опросе
 }
 setInterval(keepBackup, 5000); setTimeout(keepBackup, 1500);
